@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h1 class="h4 mb-1">История запросов ({{ limit }})</h1>
+      <p class="text-muted mb-0">Если persistent storage недоступен, история хранится пока жив контейнер.</p>
+    </div>
+    <a class="btn btn-outline-primary" href="/">Новый запрос</a>
+  </div>
+  {% if records %}
+    <div class="table-responsive">
+      <table class="table table-striped table-hover align-middle">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Время (UTC)</th>
+            <th>Режим</th>
+            <th>Рекомендация</th>
+            <th>risk_score</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in records %}
+            <tr onclick="window.location='/history/{{ item.id }}'" style="cursor: pointer;">
+              <td>{{ item.id }}</td>
+              <td>{{ item.created_at }}</td>
+              <td>{{ item.mode }}</td>
+              <td>{{ item.recommendation or '—' }}</td>
+              <td>{{ item.risk_score if item.risk_score is not none else '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="alert alert-info">Записей пока нет.</div>
+  {% endif %}
+{% endblock %}

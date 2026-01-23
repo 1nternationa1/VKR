@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h1 class="h4 mb-1">Запись {{ record.id if record else '' }}</h1>
+      <p class="text-muted mb-0">Подробный просмотр сохранённого запроса.</p>
+    </div>
+    <div>
+      <a class="btn btn-secondary me-2" href="/history">К списку</a>
+      <a class="btn btn-outline-primary" href="/">Новый запрос</a>
+    </div>
+  </div>
+  {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+  {% elif record %}
+    <div class="row g-3">
+      <div class="col-lg-4">
+        <div class="card">
+          <div class="card-body">
+            <h5 class="card-title">Метаданные</h5>
+            <p class="mb-1"><strong>Создано:</strong> {{ record.created_at }}</p>
+            <p class="mb-1"><strong>Режим:</strong> {{ record.mode }}</p>
+            <p class="mb-1"><strong>Рекомендация:</strong> {{ record.recommendation or '—' }}</p>
+            <p class="mb-0"><strong>risk_score:</strong> {{ record.risk_score if record.risk_score is not none else '—' }}</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Входной JSON</h5>
+            <pre class="small bg-light p-2 rounded">{{ record.input_json | tojson(indent=2) }}</pre>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">Ответ модели</h5>
+            {% if record.output_json %}
+              <pre class="small bg-light p-2 rounded">{{ record.output_json | tojson(indent=2) }}</pre>
+            {% else %}
+              <p class="text-muted">Структурированный отчёт отсутствует.</p>
+            {% endif %}
+            {% if record.raw_response %}
+              <p class="fw-semibold mt-3">Сырой ответ:</p>
+              <pre class="small bg-light p-2 rounded">{{ record.raw_response }}</pre>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <div class="alert alert-warning">Запись не найдена.</div>
+  {% endif %}
+{% endblock %}
