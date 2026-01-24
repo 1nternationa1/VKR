@@ -1,15 +1,19 @@
 import json
 import os
 import logging
-from typing import Any, Dict, Optional
+import re
+import html
+from typing import Any, Dict, Optional, List
+from urllib.parse import urljoin
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import httpx
 
 from .db import fetch_history, fetch_history_item, init_db, log_history
-from .providers import AIProvider, CloudProvider, GeminiProvider, get_provider
+from .providers import AIProvider, CloudProvider, GeminiProvider, LocalStubProvider, get_provider
 from .schemas import AnalyzeRequest, CompareObject, CompareRequest, CompareResponse, ReportModel
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -77,6 +81,266 @@ def _parse_llm_json(raw: str) -> Any:
     raise ValueError(f"LLM returned non-JSON response: {raw[:200]}")
 
 
+def _render_report_text(report: Any) -> str:
+    """Build a human-readable note from a structured report or raw text."""
+    if isinstance(report, str):
+        return report.strip()
+    if not isinstance(report, dict):
+        return str(report)
+
+    parts: list[str] = []
+    summary = report.get("summary")
+    if summary:
+        parts.append(str(summary).strip())
+
+    pros = report.get("pros") or []
+    if pros:
+        parts.append("Сильные стороны:")
+        parts.extend([f"- {item}" for item in pros])
+
+    cons = report.get("cons") or []
+    if cons:
+        parts.append("Риски и проверки:")
+        parts.extend([f"- {item}" for item in cons])
+
+    checks = report.get("checks") or []
+    if checks:
+        parts.append("Что проверить:")
+        parts.extend([f"- {item}" for item in checks])
+
+    price_range = report.get("price_range") or {}
+    if price_range:
+        min_value = price_range.get("min_value")
+        max_value = price_range.get("max_value")
+        currency = price_range.get("currency") or ""
+        if min_value is not None and max_value is not None:
+            parts.append(f"Диапазон цены: {min_value}–{max_value} {currency}".strip())
+
+    recommendation = report.get("recommendation")
+    if recommendation:
+        parts.append(f"Рекомендация: {recommendation}")
+
+    raw_notes = report.get("raw_notes")
+    if raw_notes:
+        parts.append(f"Дополнительно: {raw_notes}")
+
+    return "\n".join(parts).strip()
+
+
+def _format_kv_text(data: Any) -> str:
+    if isinstance(data, dict):
+        return "\n".join(f"- {key}: {value}" for key, value in data.items())
+    if isinstance(data, list):
+        return "\n".join(f"- {item}" for item in data)
+    return str(data)
+
+
+def _estimate_price_position(property_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute price per m² and rough comparison vs baseline city medians."""
+    price = property_data.get("price")
+    area = property_data.get("area")
+    if not price or not area:
+        return {}
+    try:
+        price = float(price)
+        area = float(area)
+    except (TypeError, ValueError):
+        return {}
+    if area <= 0:
+        return {}
+
+    ppm = price / area
+    location_text = (
+        property_data.get("location")
+        or property_data.get("address")
+        or property_data.get("city")
+        or ""
+    )
+    city = property_data.get("city") or _infer_city(location_text)
+    baselines = {
+        "Москва": 350_000,
+        "Санкт-Петербург": 250_000,
+        "Екатеринбург": 170_000,
+        "Новосибирск": 150_000,
+        "Казань": 180_000,
+    }
+    baseline = baselines.get(city or "", 160_000)
+    delta_pct = (ppm - baseline) / baseline * 100
+    if delta_pct <= -10:
+        verdict = "Ниже среднего по рынку"
+    elif delta_pct <= 10:
+        verdict = "В диапазоне рынка"
+    else:
+        verdict = "Дороже среднего по рынку"
+    return {
+        "city": city or "—",
+        "price_per_m2": round(ppm),
+        "baseline_per_m2": baseline,
+        "delta_percent": round(delta_pct, 1),
+        "position": verdict,
+    }
+
+
+def _normalize_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort cleanup for incoming property data to avoid validation errors."""
+    cleaned = dict(data or {})
+    # Defaults for type and location
+    if not cleaned.get("type") and cleaned.get("property_type"):
+        cleaned["type"] = cleaned["property_type"]
+    cleaned.setdefault("type", "Квартира")
+    location = cleaned.get("location") or cleaned.get("address") or cleaned.get("city")
+    if not location:
+        desc = cleaned.get("description") or cleaned.get("source_text")
+        if desc:
+            location = str(desc)[:80] + ("..." if len(str(desc)) > 80 else "")
+        else:
+            location = "Не указан"
+    cleaned["location"] = location
+    # Save city for heuristics
+    if cleaned.get("city") and cleaned["city"] not in cleaned.get("location", ""):
+        cleaned["location"] = f"{cleaned['location']} ({cleaned['city']})"
+    if cleaned.get("metro") and "метро" not in cleaned.get("location", "").lower():
+        cleaned["location"] = f"{cleaned['location']}, метро {cleaned['metro']}"
+
+    # Normalize numeric-like fields
+    num_fields = ["price", "area", "rooms", "floor", "floors_total", "year"]
+    for key in num_fields:
+        val = cleaned.get(key)
+        if isinstance(val, str):
+            norm = val.replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+            try:
+                cleaned[key] = float(norm) if key in ("area",) else int(float(norm))
+            except (ValueError, TypeError):
+                cleaned.pop(key, None)
+        elif val is None:
+            cleaned.pop(key, None)
+    return cleaned
+
+
+def _infer_city(text: str) -> Optional[str]:
+    if not text:
+        return None
+    lower = text.lower()
+    if "москва" in lower or "moscow" in lower or "мск" in lower:
+        return "Москва"
+    if "санкт" in lower or "питер" in lower or "spb" in lower or "sankt" in lower:
+        return "Санкт-Петербург"
+    if "екатеринбург" in lower:
+        return "Екатеринбург"
+    if "новосибир" in lower:
+        return "Новосибирск"
+    if "казань" in lower:
+        return "Казань"
+    return None
+
+
+def _html_to_text(content: str) -> str:
+    """Rudimentary HTML to text conversion for fetched listings."""
+    # Remove scripts/styles
+    content = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", content, flags=re.DOTALL | re.IGNORECASE)
+    # Strip tags
+    content = re.sub(r"<[^>]+>", " ", content)
+    # Unescape entities and normalize whitespace
+    content = html.unescape(content)
+    content = re.sub(r"\s+", " ", content)
+    return content.strip()
+
+
+def _extract_image_urls(html_content: str, base_url: str, limit: int = 6) -> List[str]:
+    """Extract image URLs from HTML."""
+    urls: List[str] = []
+    for match in re.findall(r'<img[^>]+(?:src|data-src|data-original)="([^"]+)"', html_content, flags=re.IGNORECASE):
+        if match.startswith("data:"):
+            continue
+        full_url = urljoin(base_url, match)
+        if full_url.startswith(("http://", "https://")) and full_url not in urls:
+            urls.append(full_url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
+    """Lightweight extraction of key fields from listing HTML/JSON snippets."""
+    data: Dict[str, Any] = {}
+
+    def _search_num(pattern: str) -> Optional[float]:
+        m = re.search(pattern, raw_html, flags=re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1))
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    # Numbers
+    price = _search_num(r'"price"\s*:\s*([0-9]{4,})')
+    area = _search_num(r'"area"\s*:\s*([0-9]+(?:\.[0-9]+)?)')
+    rooms = _search_num(r'"rooms(?:Count)?"\s*:\s*([0-9]+)')
+    floor = _search_num(r'"floor"\s*:\s*([0-9]+)')
+    floors_total = _search_num(r'"floorsTotal"\s*:\s*([0-9]+)')
+
+    if price:
+        data["price"] = int(price)
+    if area:
+        data["area"] = area
+    if rooms:
+        data["rooms"] = int(rooms)
+    if floor:
+        data["floor"] = int(floor)
+    if floors_total:
+        data["floors_total"] = int(floors_total)
+
+    # Address / city / metro
+    addr_match = re.search(r'"address"\s*:\s*"([^"]+)"', raw_html)
+    if addr_match:
+        try:
+            addr_raw = addr_match.group(1).encode("utf-8").decode("unicode_escape")
+        except Exception:
+            addr_raw = addr_match.group(1)
+        data["address"] = addr_raw
+
+    city_match = re.search(r'"geoCityName"\s*:\s*"([^"]+)"', raw_html)
+    if city_match:
+        try:
+            city_raw = city_match.group(1).encode("utf-8").decode("unicode_escape")
+        except Exception:
+            city_raw = city_match.group(1)
+        data["city"] = city_raw
+
+    metros: List[str] = []
+    for m in re.finditer(r'"undergrounds"\s*:\s*\[\s*{[^}]*"name"\s*:\s*"([^"]+)"', raw_html):
+        try:
+            metro_raw = m.group(1).encode("utf-8").decode("unicode_escape")
+        except Exception:
+            metro_raw = m.group(1)
+        if metro_raw and metro_raw not in metros:
+            metros.append(metro_raw)
+    # Fallback: plain text like "Бульвар Рокоссовского 16-20 мин."
+    if not metros:
+        for m in re.finditer(r"([А-ЯЁ][А-Яа-яЁё\-\s]+?)\s*\d{1,2}\s*[–\-]?\s*мин", raw_html):
+            name = m.group(1).strip()
+            if len(name.split()) >= 1 and name not in metros:
+                metros.append(name)
+    if metros:
+        data["metro"] = metros[0]
+        data["metros"] = metros
+
+    # City from URL if not found
+    if "city" not in data and url:
+        m = re.match(r"https?://[^/]+/([^/]+)/", url)
+        if m:
+            slug = m.group(1)
+            if slug.lower() in ("moskva", "msk", "mjk", "moscow"):
+                data["city"] = "Москва"
+            elif slug.lower() in ("sankt-peterburg", "spb"):
+                data["city"] = "Санкт-Петербург"
+            else:
+                data["city"] = slug.replace("-", " ")
+
+    return data
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("index.html", {"request": request})
@@ -97,25 +361,36 @@ def _validate_property_json(raw: str) -> Dict[str, Any]:
 async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -> Dict[str, Any]:
     raw_response: Optional[str] = None
     parsed_report: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
+    report_text: str = ""
+    price_meta: Dict[str, Any] = _estimate_price_position(property_data)
 
     try:
         raw_response = await provider.generate_report(property_data)
-        parsed_report = _parse_llm_json(raw_response)
-        report_model = ReportModel.parse_obj(parsed_report)
-        parsed_report = report_model.dict()
-    except json.JSONDecodeError as exc:
-        error_message = f"LLM returned non-JSON response: {exc}"
+        report_text = (raw_response or "").strip()
+        try:
+            parsed_candidate = _parse_llm_json(raw_response)
+            if isinstance(parsed_candidate, dict):
+                report_model = ReportModel.parse_obj(parsed_candidate)
+                parsed_report = report_model.dict()
+                report_text = _render_report_text(parsed_report)
+        except Exception:
+            # Treat response as plain text if it is not JSON-shaped.
+            parsed_report = None
     except Exception as exc:
-        logger.exception("LLM response validation failed")
-        error_message = f"LLM response validation failed: {exc}"
+        logger.exception("LLM response handling failed, falling back to stub")
+        fallback = LocalStubProvider()
+        raw_response = f"Fallback after error: {exc}"
+        try:
+            stub_resp = await fallback.generate_report(property_data)
+            raw_response = f"{raw_response}\n{stub_resp}"
+            parsed_report = None
+            report_text = stub_resp
+        except Exception:
+            raise ValueError(f"LLM response handling failed: {exc}", raw_response) from exc
 
-    log_history(property_data, parsed_report, raw_response, mode=os.getenv("AI_MODE", "cloud"))
+    log_history(property_data, parsed_report or report_text, raw_response, mode=os.getenv("AI_MODE", "cloud"))
 
-    if error_message:
-        raise ValueError(error_message, raw_response)
-
-    return {"report": parsed_report, "raw": raw_response}
+    return {"report": parsed_report, "report_text": report_text, "raw": raw_response, "price_meta": price_meta}
 
 
 def _score_object(obj: CompareObject) -> float:
@@ -187,11 +462,12 @@ def _build_compare_response(objects: list[CompareObject]) -> CompareResponse:
 async def analyze(
     request: Request,
     property_json: Optional[str] = Form(None),
-    analyze_request: Optional[AnalyzeRequest] = Body(None),
 ) -> Any:
     provider = get_provider()
 
     is_form = property_json is not None
+    property_data: Optional[Dict[str, Any]] = None
+
     if property_json:
         try:
             property_data = _validate_property_json(property_json)
@@ -200,10 +476,24 @@ async def analyze(
             if is_form:
                 return templates.TemplateResponse("index.html", context, status_code=exc.status_code)
             raise
-    elif analyze_request:
-        property_data = analyze_request.property_data
     else:
-        raise HTTPException(status_code=400, detail="Provide property_json form field or JSON body.")
+        try:
+            raw_body = await request.json()
+        except Exception:
+            raw_body = {}
+        if isinstance(raw_body, dict):
+            property_data = raw_body.get("property_data") or raw_body
+
+    # Graceful fallback: allow empty input, but normalize to defaults.
+    property_data = _normalize_property_data(property_data or {})
+    try:
+        property_data = AnalyzeRequest(property_data=property_data).property_data
+    except Exception as exc:
+        detail = str(exc)
+        if is_form:
+            context = {"request": request, "result": None, "error": detail, "sample_json": json.dumps(property_data, ensure_ascii=False, indent=2)}
+            return templates.TemplateResponse("index.html", context, status_code=400)
+        raise HTTPException(status_code=400, detail=detail) from exc
 
     try:
         result = await _process_report(property_data, provider)
@@ -240,11 +530,12 @@ async def analyze(
             "result": result,
             "error": None,
             "raw_response": result["raw"],
+            "report_text": result["report_text"],
             "sample_json": json.dumps(property_data, ensure_ascii=False, indent=2),
         }
         return templates.TemplateResponse("index.html", context)
 
-    return {"report": result["report"], "raw_response": result["raw"]}
+    return {"report": result["report"], "report_text": result["report_text"], "raw_response": result["raw"]}
 
 
 @app.post("/api/analyze", response_model=CompareResponse)
@@ -267,6 +558,70 @@ async def api_analyze(payload: CompareRequest) -> CompareResponse:
     return _build_compare_response(payload.objects)
 
 
+@app.post("/api/fetch_listing")
+async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+
+    proxies = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or None
+
+    headers = {
+        "User-Agent": "ValuatorBot/1.0 (+https://example.com)",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.6",
+    }
+
+    async def _fetch_direct(target: str) -> str:
+        async with httpx.AsyncClient(timeout=12.0, proxies=proxies, headers=headers) as client:
+            response = await client.get(target, follow_redirects=True)
+            response.raise_for_status()
+            return response.text
+
+    async def _fetch_via_proxy(target: str) -> str:
+        proxy_url = f"https://r.jina.ai/{target}"
+        async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            response = await client.get(proxy_url, follow_redirects=True)
+            response.raise_for_status()
+            return response.text
+
+    raw_html: Optional[str] = None
+    errors: list[str] = []
+    # Try proxy first (лучше для заблокированных RU сайтов), затем прямой доступ.
+    images: List[str] = []
+    parsed_fields: Dict[str, Any] = {}
+    for fetcher in (_fetch_via_proxy, _fetch_direct):
+        try:
+            raw_html = await fetcher(url)
+            if raw_html and not images:
+                try:
+                    images = _extract_image_urls(raw_html, url)
+                except Exception:
+                    images = []
+            if raw_html and not parsed_fields:
+                try:
+                    parsed_fields = _extract_structured_listing(raw_html, url)
+                except Exception:
+                    parsed_fields = {}
+            break
+        except httpx.HTTPStatusError as exc:
+            errors.append(f"{exc.response.status_code}: {exc.response.text[:200]}")
+        except httpx.RequestError as exc:
+            errors.append(str(exc))
+
+    if not raw_html:
+        logger.warning("fetch_listing failed for %s: %s", url, "; ".join(errors))
+        raise HTTPException(status_code=502, detail=f"Cannot fetch listing. Errors: {'; '.join(errors)}")
+
+    text = _html_to_text(raw_html)
+    if not text:
+        raise HTTPException(status_code=422, detail="Cannot extract text from the provided link")
+
+    images = [img for img in images[:6] if isinstance(img, str)]
+    return {"text": text[:6000], "images": images, "parsed": parsed_fields}
+
+
 @app.get("/history", response_class=HTMLResponse)
 async def history(request: Request, limit: int = 20) -> HTMLResponse:
     records = fetch_history(limit=limit)
@@ -285,9 +640,20 @@ async def history_detail(request: Request, record_id: int) -> HTMLResponse:
             {"request": request, "record": None, "error": "Запись не найдена."},
             status_code=404,
         )
+    output_source = record.get("output_json") or record.get("raw_response")
+    output_text = (
+        _render_report_text(output_source) if isinstance(output_source, dict) else (str(output_source) if output_source else None)
+    )
+    input_text = _format_kv_text(record.get("input_json")) if record.get("input_json") else None
     return templates.TemplateResponse(
         "history_detail.html",
-        {"request": request, "record": record, "error": None},
+        {
+            "request": request,
+            "record": record,
+            "error": None,
+            "output_text": output_text,
+            "input_text": input_text,
+        },
     )
 
 

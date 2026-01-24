@@ -21,15 +21,19 @@
             <p class="mb-1"><strong>Создано:</strong> {{ record.created_at }}</p>
             <p class="mb-1"><strong>Режим:</strong> {{ record.mode }}</p>
             <p class="mb-1"><strong>Рекомендация:</strong> {{ record.recommendation or '—' }}</p>
-            <p class="mb-0"><strong>risk_score:</strong> {{ record.risk_score if record.risk_score is not none else '—' }}</p>
+            <p class="mb-0"><strong>Риск:</strong> {{ record.risk_score if record.risk_score is not none else '—' }}</p>
           </div>
         </div>
       </div>
       <div class="col-lg-4">
         <div class="card h-100">
           <div class="card-body">
-            <h5 class="card-title">Входной JSON</h5>
-            <pre class="small bg-light p-2 rounded">{{ record.input_json | tojson(indent=2) }}</pre>
+            <h5 class="card-title">Данные запроса</h5>
+            {% if input_text %}
+              <pre class="small bg-light p-2 rounded">{{ input_text }}</pre>
+            {% else %}
+              <p class="text-muted mb-0">Нет сохранённых данных.</p>
+            {% endif %}
           </div>
         </div>
       </div>
@@ -37,14 +41,12 @@
         <div class="card h-100">
           <div class="card-body">
             <h5 class="card-title">Ответ модели</h5>
-            {% if record.output_json %}
-              <pre class="small bg-light p-2 rounded">{{ record.output_json | tojson(indent=2) }}</pre>
-            {% else %}
-              <p class="text-muted">Структурированный отчёт отсутствует.</p>
-            {% endif %}
-            {% if record.raw_response %}
-              <p class="fw-semibold mt-3">Сырой ответ:</p>
+            {% if output_text %}
+              <pre class="small bg-light p-2 rounded">{{ output_text }}</pre>
+            {% elif record.raw_response %}
               <pre class="small bg-light p-2 rounded">{{ record.raw_response }}</pre>
+            {% else %}
+              <p class="text-muted">Ответ не сохранён.</p>
             {% endif %}
           </div>
         </div>

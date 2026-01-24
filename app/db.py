@@ -31,11 +31,22 @@ def init_db() -> None:
 
 def log_history(
     property_data: Dict[str, Any],
-    report_data: Optional[Dict[str, Any]],
+    report_data: Optional[Any],
     raw_response: Optional[str],
     mode: str,
 ) -> int:
     created_at = datetime.utcnow().isoformat()
+    recommendation = None
+    risk_score = None
+    serialized_report: Optional[str] = None
+
+    if isinstance(report_data, dict):
+        recommendation = report_data.get("recommendation")
+        risk_score = report_data.get("risk_score")
+        serialized_report = json.dumps(report_data, ensure_ascii=False)
+    elif report_data:
+        serialized_report = str(report_data)
+
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.execute(
             """
@@ -46,10 +57,10 @@ def log_history(
                 created_at,
                 mode,
                 json.dumps(property_data, ensure_ascii=False),
-                json.dumps(report_data, ensure_ascii=False) if report_data else None,
+                serialized_report,
                 raw_response,
-                report_data.get("recommendation") if report_data else None,
-                report_data.get("risk_score") if report_data else None,
+                recommendation,
+                risk_score,
             ),
         )
         conn.commit()

@@ -91,9 +91,9 @@ class CloudProvider(AIProvider):
                 {
                     "role": "system",
                     "content": (
-                        "You are a real estate valuation expert. "
-                        "Respond strictly with valid JSON matching the requested schema. "
-                        "Do not add explanations or prose."
+                        "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
+                        '{"summary":"","recommendation":"","risk_score":0,"price_range":{"min_value":0,"max_value":0,"currency":"RUB"},'
+                        '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -140,26 +140,16 @@ class LocalStubProvider(AIProvider):
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
         area = property_data.get("area") or property_data.get("square_meters")
         base_price = 1200 * float(area or 50)
-        stub = {
-            "summary": "Черновой ответ: тестовая оценка недвижимости.",
-            "recommendation": "Провести очный осмотр и заказать юридическую проверку.",
-            "risk_score": 0.35,
-            "price_range": {
-                "min_value": round(base_price * 0.9, 2),
-                "max_value": round(base_price * 1.1, 2),
-                "currency": "USD",
-            },
-            "pros": [
-                "Заглушка: стабильный район",
-                "Заглушка: базовая инфраструктура рядом",
-            ],
-            "cons": [
-                "Заглушка: нет анализа ремонта",
-                "Заглушка: нет информации о документах",
-            ],
-            "raw_notes": "Local stub provider — без реального запроса к LLM.",
-        }
-        return json.dumps(stub, ensure_ascii=False)
+        low = round(base_price * 0.9, 2)
+        high = round(base_price * 1.1, 2)
+        return (
+            "Черновой ответ (заглушка):\n"
+            "— Объект выглядит стандартно, данных мало — нужна очная проверка.\n"
+            f"— Ориентир цены: {low:,.0f}–{high:,.0f} у.е. по площади {area or 'N/A'} м².\n"
+            "— Сильные стороны: базовая инфраструктура, типовой уровень спроса.\n"
+            "— Риски: нет информации о ремонте и документах, цену нужно сравнить с аналогами.\n"
+            "Рекомендация: запросить документы, осмотреть объект и уточнить состояние инженерии."
+        )
 
 class GeminiProvider(AIProvider):
     def __init__(self) -> None:
@@ -246,20 +236,11 @@ class GeminiProvider(AIProvider):
 
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
         prompt = (
-            "Ты эксперт по недвижимости. Проанализируй объект и верни строго JSON со схемой:\n"
-            "{\n"
-            '  \"summary\": \"\",\n'
-            '  \"recommendation\": \"\",\n'
-            '  \"risk_score\": 0.0,\n'
-            '  \"price_range\": {\"min_value\": 0, \"max_value\": 0, \"currency\": \"RUB\"},\n'
-            '  \"pros\": [],\n'
-            '  \"cons\": [],\n'
-            '  \"raw_notes\": \"\"\n'
-            "}\n"
-            "Требования: risk_score в диапазоне 0..1; pros/cons без пустых строк. "
-            "Отвечай строго JSON. Входные данные:\n"
+            "Ты эксперт по недвижимости. Верни строго валидный JSON по схеме: "
+            '{"summary":"","recommendation":"","risk_score":0,"price_range":{"min_value":0,"max_value":0,"currency":"RUB"},'
+            '"pros":[],"cons":[],"checks":[]} без лишнего текста. Пиши кратко.\n'
         )
-        prompt += build_prompt(property_data)
+        prompt += "Данные об объекте:\n" + build_prompt(property_data)
         return await self._call(prompt)
 
     async def generate_comparison(self, objects: List[Dict[str, Any]]) -> str:

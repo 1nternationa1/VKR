@@ -3,730 +3,743 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Экспертная оценка недвижимости — MVP</title>
+  <title>Экспертная оценка недвижимости</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700&display=swap');
     :root {
-      --bg: #f6f7fa;
-      --card: #ffffff;
-      --text: #1d1f25;
+      --blue-900: #0a2f63;
+      --blue-700: #1c6fb5;
+      --blue-500: #2f9ae2;
+      --green: #3cb878;
+      --green-weak: #e5f7ed;
+      --red: #d9534f;
+      --amber: #f6c344;
+      --bg: #f2f5fa;
+      --card: #fff;
+      --border: #d9e2ef;
+      --text: #1f2937;
       --muted: #6b7280;
-      --accent: #1d6ef2;
-      --accent-weak: #e6edff;
-      --border: #e4e6eb;
-      --error: #d14343;
-      --success: #1b9a59;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
-      font-family: "Manrope", "Segoe UI", sans-serif;
+      font-family: "Nunito Sans", "Segoe UI", sans-serif;
       line-height: 1.6;
     }
-    .app {
-      max-width: 1080px;
-      margin: 0 auto;
-      padding: 24px 16px 48px;
+    .hero {
+      background: linear-gradient(135deg, var(--blue-900), var(--blue-500));
+      color: #fff;
+      padding: 22px 16px 28px;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(9, 30, 66, 0.15);
     }
-    header {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 20px;
+    .hero h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.01em; }
+    .hero p { margin: 0; color: rgba(255,255,255,0.9); font-weight: 600; }
+    .page {
+      max-width: 1180px;
+      margin: 16px auto 36px;
+      padding: 0 16px;
     }
-    h1 {
-      margin: 4px 0 6px;
-      font-size: 28px;
-      line-height: 1.2;
-      letter-spacing: -0.01em;
-    }
-    h2 {
-      margin: 0;
-      font-size: 18px;
-    }
-    .eyebrow {
-      color: var(--muted);
-      text-transform: uppercase;
-      font-weight: 700;
-      font-size: 12px;
-      letter-spacing: 0.08em;
-    }
-    .lede {
-      max-width: 720px;
-      color: var(--muted);
-      margin: 0;
-      font-size: 15px;
-    }
-    .pill {
-      background: var(--accent-weak);
-      color: var(--accent);
-      border-radius: 12px;
-      padding: 6px 10px;
-      font-weight: 600;
-      font-size: 13px;
-    }
-    .card-grid {
+    .layout {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 12px;
-      margin-top: 12px;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 16px;
     }
-    .card {
+    .panel {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 14px;
-      box-shadow: 0 6px 16px rgba(17, 24, 39, 0.04);
-    }
-    .card header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-    }
-    .card-title {
-      font-weight: 700;
-      font-size: 16px;
-      margin: 0;
-    }
-    .field {
-      display: flex;
-      flex-direction: column;
-      margin-top: 8px;
-    }
-    .field label {
-      font-weight: 600;
-      font-size: 13px;
-      margin-bottom: 4px;
-    }
-    input, textarea {
-      width: 100%;
-      font: inherit;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      padding: 10px 12px;
-      background: #fff;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-    input:focus, textarea:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(29, 110, 242, 0.15);
-    }
-    textarea {
-      min-height: 140px;
-      resize: vertical;
-      line-height: 1.5;
-    }
-    .inline {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .actions {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      margin: 18px 0;
-      flex-wrap: wrap;
-    }
-    button {
-      font: inherit;
-      border: none;
-      cursor: pointer;
-      border-radius: 10px;
-      padding: 10px 14px;
-      transition: transform 0.1s, box-shadow 0.2s;
-    }
-    button:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-    .primary {
-      background: linear-gradient(120deg, #2468f6, #1f4dd9);
-      color: #fff;
-      font-weight: 700;
-      box-shadow: 0 8px 20px rgba(36, 104, 246, 0.18);
-    }
-    .ghost {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--text);
-    }
-    button:not(:disabled):active {
-      transform: translateY(1px);
-    }
-    .status {
-      color: var(--muted);
-      font-size: 14px;
-    }
-    .status.error { color: var(--error); }
-    .status.ok { color: var(--success); }
-    .status.info { color: var(--accent); }
-    .hint {
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .error {
-      color: var(--error);
-      font-size: 13px;
-      margin-top: 6px;
+      box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
+      padding: 18px;
     }
     .tabs {
       display: inline-flex;
-      gap: 6px;
-      margin-bottom: 10px;
-      background: var(--accent-weak);
+      background: #eef4ff;
+      border-radius: 10px;
       padding: 4px;
-      border-radius: 12px;
+      gap: 6px;
+      margin-bottom: 12px;
     }
     .tab-btn {
-      background: transparent;
       border: none;
-      padding: 8px 12px;
-      border-radius: 9px;
-      font-weight: 600;
+      background: transparent;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-weight: 700;
       color: var(--muted);
+      cursor: pointer;
     }
     .tab-btn.active {
       background: #fff;
-      color: var(--text);
+      color: var(--blue-900);
       box-shadow: 0 4px 12px rgba(0,0,0,0.08);
     }
-    .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
-    .result {
-      background: var(--card);
+    label { display: block; font-weight: 700; margin-bottom: 6px; }
+    input, textarea, select {
+      width: 100%;
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 16px;
-      box-shadow: 0 10px 24px rgba(17, 24, 39, 0.07);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fff;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
-    .summary-grid {
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: var(--blue-500);
+      box-shadow: 0 0 0 3px rgba(47, 129, 228, 0.15);
+    }
+    textarea { min-height: 180px; resize: vertical; }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+    .btn {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.2s;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary {
+      background: linear-gradient(120deg, #2f81e4, #1f5fbe);
+      color: #fff;
+      box-shadow: 0 10px 20px rgba(47, 129, 228, 0.2);
+    }
+    .btn.ghost {
+      background: #fff;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn.secondary {
+      background: #f3f5f9;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .status { font-size: 14px; color: var(--muted); }
+    .status.error { color: var(--red); }
+    .status.ok { color: var(--green); }
+    .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 12px;
-      margin-top: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 10px;
     }
-    ul {
-      padding-left: 18px;
-      margin: 6px 0;
+    .input-box { margin-bottom: 10px; }
+    .result-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
     }
-    pre {
-      background: #0f172a;
-      color: #e2e8f0;
-      border-radius: 12px;
-      padding: 14px;
-      overflow: auto;
-      border: 1px solid #0b1221;
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 13px;
     }
-    code { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 13px; }
-    .json-bar {
+    .pill.success { background: #e5f7ed; color: var(--green); }
+    .pill.warning { background: #fff6e5; color: #c88c00; }
+    .pill.danger { background: #fdeaea; color: var(--red); }
+    .card-section { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+    .range {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      margin-bottom: 8px;
+      margin-top: 4px;
+      font-weight: 800;
+      font-size: 18px;
     }
-    .pill-set {
-      display: flex;
-      flex-wrap: wrap;
+    .risk-bar {
+      position: relative;
+      background: #f3f5f9;
+      border-radius: 8px;
+      height: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      margin-top: 6px;
+    }
+    .risk-fill {
+      height: 100%;
+      width: 40%;
+      background: linear-gradient(90deg, #5bd389, #38b26f);
+      transition: width 0.3s ease, background 0.3s ease;
+    }
+    .cols {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+    ul { padding-left: 18px; margin: 6px 0; }
+    li { margin: 4px 0; }
+    .next-step {
+      background: #fff9e7;
+      border: 1px solid #ffe4a3;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
       gap: 8px;
     }
-    .pill-score {
-      background: var(--accent-weak);
-      color: var(--text);
-      border-radius: 10px;
-      padding: 6px 10px;
-      font-weight: 600;
+    .parsed-hint { margin-top: 8px; color: var(--muted); font-size: 13px; }
+    .tag {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: #eef4ff;
+      color: var(--blue-900);
+      font-weight: 700;
+      font-size: 12px;
+      margin-right: 6px;
+      margin-bottom: 4px;
     }
-    .hidden { display: none; }
-    .section {
-      margin: 16px 0 6px;
-    }
-    .parse-wrap {
-      background: var(--card);
-      border: 1px dashed var(--border);
-      border-radius: 12px;
-      padding: 12px;
-      margin-top: 12px;
-    }
-    .inline-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 8px;
-      flex-wrap: wrap;
-    }
-    @media (max-width: 640px) {
-      header { flex-direction: column; align-items: flex-start; }
-      .actions { flex-direction: column; align-items: flex-start; }
-      .json-bar { flex-direction: column; align-items: flex-start; }
-      .inline { grid-template-columns: 1fr; }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="app">
-    <header>
-      <div>
-        <div class="eyebrow">MVP · Сравнение объектов</div>
-        <h1>Экспертная оценка недвижимости</h1>
-        <p class="lede">Заполните карточки или вставьте JSON/текст объявления. Нажмите «Сравнить» — получите победителя с причинами и машинный JSON для логирования.</p>
-      </div>
-      <div class="pill">AI-ready</div>
-    </header>
-    {% if error %}
-    <div class="result" style="border-color: var(--error); color: var(--error); box-shadow:none;">
-      Ошибка запроса: {{ error }}
-    </div>
-    {% endif %}
+  <div class="hero">
+    <h1>Экспертная оценка недвижимости</h1>
+    <p>Оценка стоимости и рисков за 30 секунд.</p>
+  </div>
 
-    <section class="section">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-        <h2>Объекты</h2>
-        <button id="addObjectBtn" class="ghost" type="button">Добавить объект (макс 3)</button>
-      </div>
-      <div id="objectGrid" class="card-grid"></div>
-    </section>
-
-    <section class="section parse-wrap">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-        <div>
-          <div style="font-weight:700;">Вставить текст/JSON</div>
-          <div class="hint">Можно вставить объявление или JSON вида {"objects":[...]}. Будут заполнены до 3 карточек.</div>
+  <div class="page">
+    <div class="layout">
+      <div class="panel">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="paste">Вставить объявление</button>
+          <button class="tab-btn" data-tab="manual">Заполнить вручную</button>
         </div>
-      </div>
-      <textarea id="rawPaste" placeholder='[{ "id": "A", "price": 12000000, "area": 62, "district": "ЦАО" }]'></textarea>
-      <div class="inline-actions">
-        <button id="parseBtn" class="ghost" type="button">Заполнить из JSON</button>
-        <span id="parseStatus" class="hint"></span>
-      </div>
-    </section>
 
-    <div class="actions">
-      <div style="display:flex; gap:8px; flex-wrap:wrap;">
-        <button id="compareBtn" class="primary" type="button">Сравнить</button>
-        <button id="resetBtn" class="ghost" type="button">Сбросить</button>
-      </div>
-      <div id="status" class="status"></div>
-    </div>
-
-    <section id="resultSection" class="result hidden">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="summary">Вывод</button>
-        <button class="tab-btn" data-tab="json">JSON</button>
-      </div>
-      <div id="summaryTab" class="tab-panel active">
-        <div class="winner" style="font-weight:700; font-size:16px;">Победитель: <span id="winnerId"></span></div>
-        <div id="summaryText" class="hint" style="margin:4px 0 10px;"></div>
-        <div class="pill-set" id="scorePills"></div>
-        <div class="summary-grid">
-          <div>
-            <div style="font-weight:700; margin-top:6px;">Причины</div>
-            <ul id="reasonsList"></ul>
+        <div id="tab-paste" class="tab-pane">
+          <div class="input-box">
+            <label for="adUrl">Ссылка на объявление</label>
+            <input id="adUrl" type="url" placeholder="https://example.com/offer/123" />
+            <div class="hint">Можно вставить ссылку с Циан, Авито и др. Мы загрузим текст и распознаем параметры.</div>
           </div>
-          <div>
-            <div style="font-weight:700; margin-top:6px;">Риски / что проверить</div>
-            <ul id="risksList"></ul>
-            <div style="font-weight:700; margin-top:10px;">Проверить</div>
-            <ul id="checksList"></ul>
+          <div class="btn-row">
+            <button id="fetchUrlBtn" class="btn secondary" type="button">Распознать по ссылке</button>
+            <div class="status" id="fetchStatus"></div>
+          </div>
+          <div class="input-box">
+            <label for="adText">Текст объявления</label>
+            <textarea id="adText" placeholder="Продам 3-к квартиру, 75 м², 9/16 эт., метро Тимирязевская, 12 500 000 ₽"></textarea>
+          </div>
+          <div class="btn-row">
+            <button id="pasteBtn" class="btn secondary" type="button">Вставить из буфера</button>
+            <div id="parsedSummary" class="parsed-hint"></div>
           </div>
         </div>
-      </div>
-      <div id="jsonTab" class="tab-panel">
-        <div class="json-bar">
-          <button id="copyJsonBtn" class="ghost" type="button">Скопировать JSON</button>
-          <span id="copyStatus" class="hint"></span>
+
+        <div id="tab-manual" class="tab-pane" style="display:none;">
+          <div class="grid">
+            <div class="input-box">
+              <label for="type">Тип</label>
+              <input id="type" data-field="type" placeholder="Квартира">
+            </div>
+            <div class="input-box">
+              <label for="address">Адрес/район</label>
+              <input id="address" data-field="address" placeholder="г. Москва, Тимирязевская">
+            </div>
+            <div class="input-box">
+              <label for="price">Цена, ₽</label>
+              <input id="price" data-field="price" type="number" placeholder="12500000">
+            </div>
+            <div class="input-box">
+              <label for="area">Площадь, м²</label>
+              <input id="area" data-field="area" type="number" placeholder="75">
+            </div>
+            <div class="input-box">
+              <label for="rooms">Комнат</label>
+              <input id="rooms" data-field="rooms" type="number" placeholder="3">
+            </div>
+            <div class="input-box">
+              <label for="floor">Этаж</label>
+              <input id="floor" data-field="floor" type="number" placeholder="9">
+            </div>
+            <div class="input-box">
+              <label for="floors_total">Этажность</label>
+              <input id="floors_total" data-field="floors_total" type="number" placeholder="16">
+            </div>
+            <div class="input-box">
+              <label for="year">Год постройки</label>
+              <input id="year" data-field="year" type="number" placeholder="2010">
+            </div>
+            <div class="input-box">
+              <label for="condition">Состояние/ремонт</label>
+              <input id="condition" data-field="condition" placeholder="Евроремонт">
+            </div>
+          </div>
+          <div class="input-box">
+            <label for="notes">Примечания</label>
+            <textarea id="notes" data-field="notes" placeholder="Балкон, окна во двор, статус, обременения и т.д."></textarea>
+          </div>
         </div>
-        <pre><code id="jsonOutput"></code></pre>
+
+        <div class="btn-row" style="justify-content: space-between; margin-top: 8px;">
+          <div class="status" id="status"></div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="resetBtn" class="btn ghost" type="button">Сбросить</button>
+            <button id="evaluateBtn" class="btn primary" type="button">Оценить</button>
+          </div>
+        </div>
       </div>
-    </section>
+
+      <div class="panel">
+        <div class="result-head">
+          <div class="pill success" id="verdict">Вердикт: —</div>
+          <div class="tag" id="modeTag">AI</div>
+        </div>
+        <div id="summaryText" class="hint" style="margin-bottom:10px; background:#f7fafe; border:1px solid #e1e9f5; border-radius:10px; padding:10px;">
+          Здесь появится краткое резюме по объекту.
+        </div>
+
+        <div class="card-section">
+          <div style="font-weight:700;">Оценка цены</div>
+          <div class="range" id="priceRange">—</div>
+          <div class="hint" id="priceHint"></div>
+        </div>
+
+        <div class="card-section">
+          <div style="font-weight:700;">Риски</div>
+          <div class="risk-bar">
+            <div class="risk-fill" id="riskFill"></div>
+          </div>
+          <div class="hint" id="riskLabel" style="margin-top:6px;">—</div>
+        </div>
+
+        <div class="card-section cols">
+          <div>
+            <div style="font-weight:700;">Плюсы</div>
+            <ul id="prosList"></ul>
+          </div>
+          <div>
+            <div style="font-weight:700;">Минусы</div>
+            <ul id="consList"></ul>
+          </div>
+        </div>
+
+        <div class="card-section">
+          <div style="font-weight:700;">Что проверить перед сделкой:</div>
+          <ul id="checksList"></ul>
+        </div>
+
+        <div class="card-section">
+          <div class="next-step" id="nextStep">Следующий шаг: заполните данные и нажмите «Оценить».</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
-    (function () {
-      const maxObjects = 3;
-      const letters = ["A", "B", "C"];
-      const objectGrid = document.getElementById("objectGrid");
-      const addObjectBtn = document.getElementById("addObjectBtn");
-      const compareBtn = document.getElementById("compareBtn");
-      const resetBtn = document.getElementById("resetBtn");
-      const statusEl = document.getElementById("status");
-      const parseBtn = document.getElementById("parseBtn");
-      const parseStatus = document.getElementById("parseStatus");
-      const rawPaste = document.getElementById("rawPaste");
-      const resultSection = document.getElementById("resultSection");
-      const winnerIdEl = document.getElementById("winnerId");
-      const summaryTextEl = document.getElementById("summaryText");
-      const reasonsList = document.getElementById("reasonsList");
-      const risksList = document.getElementById("risksList");
-      const checksList = document.getElementById("checksList");
-      const scorePills = document.getElementById("scorePills");
-      const jsonOutput = document.getElementById("jsonOutput");
-      const copyJsonBtn = document.getElementById("copyJsonBtn");
-      const copyStatus = document.getElementById("copyStatus");
-      const tabButtons = document.querySelectorAll(".tab-btn");
-      const summaryTab = document.getElementById("summaryTab");
-      const jsonTab = document.getElementById("jsonTab");
-
-      let objects = [];
-      let errors = {};
-
-      function blankObject(index) {
-        return {
-          id: letters[index] || `Obj ${index + 1}`,
+    (function() {
+      const state = {
+        activeTab: "paste",
+        adText: "",
+        url: "",
+        formData: {
+          type: "Квартира",
+          address: "",
           price: "",
           area: "",
-          district: "",
-          year: "",
-          condition: "",
+          rooms: "",
           floor: "",
           floors_total: "",
-          raw_text: "",
-        };
+          year: "",
+          condition: "",
+          notes: ""
+        },
+        images: []
+      };
+
+      const elements = {
+        tabs: document.querySelectorAll(".tab-btn"),
+        tabPaste: document.getElementById("tab-paste"),
+        tabManual: document.getElementById("tab-manual"),
+        adUrl: document.getElementById("adUrl"),
+        adText: document.getElementById("adText"),
+        pasteBtn: document.getElementById("pasteBtn"),
+        fetchUrlBtn: document.getElementById("fetchUrlBtn"),
+        fetchStatus: document.getElementById("fetchStatus"),
+        parsedSummary: document.getElementById("parsedSummary"),
+        status: document.getElementById("status"),
+        evaluateBtn: document.getElementById("evaluateBtn"),
+        resetBtn: document.getElementById("resetBtn"),
+        // manual inputs
+        manualFields: document.querySelectorAll("[data-field]"),
+        // result
+        verdict: document.getElementById("verdict"),
+        modeTag: document.getElementById("modeTag"),
+        summaryText: document.getElementById("summaryText"),
+        priceRange: document.getElementById("priceRange"),
+        priceHint: document.getElementById("priceHint"),
+        riskFill: document.getElementById("riskFill"),
+        riskLabel: document.getElementById("riskLabel"),
+        prosList: document.getElementById("prosList"),
+        consList: document.getElementById("consList"),
+        checksList: document.getElementById("checksList"),
+        nextStep: document.getElementById("nextStep"),
+      };
+
+      function switchTab(tab) {
+        state.activeTab = tab;
+        elements.tabs.forEach(btn => btn.classList.toggle("active", btn.dataset.tab === tab));
+        elements.tabPaste.style.display = tab === "paste" ? "block" : "none";
+        elements.tabManual.style.display = tab === "manual" ? "block" : "none";
       }
 
       function setStatus(text, kind = "") {
-        statusEl.textContent = text;
-        statusEl.className = `status ${kind}`;
+        elements.status.textContent = text || "";
+        elements.status.className = `status ${kind}`;
       }
 
-      function renderCards() {
-        objectGrid.innerHTML = "";
-        objects.forEach((obj, index) => {
-          const card = document.createElement("div");
-          card.className = "card";
-          const cardHeader = document.createElement("header");
-          const title = document.createElement("div");
-          title.className = "card-title";
-          title.textContent = `Объект ${index + 1}`;
-          cardHeader.appendChild(title);
+      function setFetchStatus(text, kind = "") {
+        elements.fetchStatus.textContent = text || "";
+        elements.fetchStatus.className = `status ${kind}`;
+      }
 
-          if (objects.length > 1) {
-            const removeBtn = document.createElement("button");
-            removeBtn.type = "button";
-            removeBtn.className = "ghost";
-            removeBtn.textContent = "Удалить";
-            removeBtn.addEventListener("click", () => {
-              objects.splice(index, 1);
-              errors = {};
-              renderCards();
-            });
-            cardHeader.appendChild(removeBtn);
-          }
-          card.appendChild(cardHeader);
-
-          const fields = [
-            { label: "Название/ID", key: "id", type: "text", placeholder: "A", required: true },
-            { label: "Цена*", key: "price", type: "number", placeholder: "12000000", required: true },
-            { label: "Площадь, м²*", key: "area", type: "number", placeholder: "62", required: true },
-            { label: "Адрес/район", key: "district", type: "text", placeholder: "ЦАО / Пресненский" },
-          ];
-
-          fields.forEach((field) => {
-            const wrap = document.createElement("div");
-            wrap.className = "field";
-            const label = document.createElement("label");
-            label.textContent = field.label;
-            wrap.appendChild(label);
-            const input = document.createElement("input");
-            input.type = field.type;
-            input.placeholder = field.placeholder || "";
-            input.value = obj[field.key] ?? "";
-            input.addEventListener("input", (e) => {
-              obj[field.key] = e.target.value;
-              errors[index] = undefined;
-            });
-            wrap.appendChild(input);
-            card.appendChild(wrap);
-          });
-
-          const inlineWrap = document.createElement("div");
-          inlineWrap.className = "inline";
-          [
-            { label: "Год постройки", key: "year", type: "number", placeholder: "2014" },
-            { label: "Состояние/ремонт", key: "condition", type: "text", placeholder: "Евроремонт" },
-            { label: "Этаж", key: "floor", type: "number", placeholder: "8" },
-            { label: "Этажность", key: "floors_total", type: "number", placeholder: "17" },
-          ].forEach((field) => {
-            const wrap = document.createElement("div");
-            wrap.className = "field";
-            const label = document.createElement("label");
-            label.textContent = field.label;
-            wrap.appendChild(label);
-            const input = document.createElement("input");
-            input.type = field.type;
-            input.placeholder = field.placeholder || "";
-            input.value = obj[field.key] ?? "";
-            input.addEventListener("input", (e) => {
-              obj[field.key] = e.target.value;
-              errors[index] = undefined;
-            });
-            wrap.appendChild(input);
-            inlineWrap.appendChild(wrap);
-          });
-          card.appendChild(inlineWrap);
-
-          const textWrap = document.createElement("div");
-          textWrap.className = "field";
-          const textLabel = document.createElement("label");
-          textLabel.textContent = "Описание/сырой текст (опционально)";
-          textWrap.appendChild(textLabel);
-          const textArea = document.createElement("textarea");
-          textArea.rows = 3;
-          textArea.value = obj.raw_text || "";
-          textArea.placeholder = "Скопируйте сюда текст объявления или заметки";
-          textArea.addEventListener("input", (e) => {
-            obj.raw_text = e.target.value;
-          });
-          textWrap.appendChild(textArea);
-          card.appendChild(textWrap);
-
-          if (errors[index]) {
-            const err = document.createElement("div");
-            err.className = "error";
-            err.textContent = errors[index];
-            card.appendChild(err);
-          }
-
-          objectGrid.appendChild(card);
+      function updateManualForm() {
+        elements.manualFields.forEach((input) => {
+          const key = input.dataset.field;
+          input.value = state.formData[key] ?? "";
         });
+      }
 
-        addObjectBtn.disabled = objects.length >= maxObjects;
+      function parseListingText(text, url = "") {
+        const result = {};
+        const normalized = text.replace(/\u00a0/g, " ");
+        const priceMatch = normalized.match(/(\d[\d\s]{4,})(?:\s*(₽|руб|р\.?))/i);
+        if (priceMatch) {
+          result.price = Number(priceMatch[1].replace(/\s+/g, ""));
+        }
+        const areaMatch = normalized.match(/(\d+(?:[.,]\d+)?)\s*(м2|м²|кв\.м|кв м)/i);
+        if (areaMatch) {
+          result.area = Number(areaMatch[1].replace(",", "."));
+        }
+        const roomsMatch = normalized.match(/(\d+)[-\s]*к(\b|\s|\.)/i);
+        if (roomsMatch) {
+          result.rooms = Number(roomsMatch[1]);
+        }
+        const floorMatch = normalized.match(/(\d+)\s*\/\s*(\d+)\s*эт/i);
+        if (floorMatch) {
+          result.floor = Number(floorMatch[1]);
+          result.floors_total = Number(floorMatch[2]);
+        }
+        const yearMatch = normalized.match(/(19|20)\d{2}\s*г/i);
+        if (yearMatch) {
+          result.year = Number(yearMatch[0].replace(/[^\d]/g, ""));
+        }
+        const metroMatch = normalized.match(/метро\s+([A-Za-zА-Яа-яЁё\-\s]+)/i);
+        if (metroMatch) {
+          result.metro = metroMatch[1].trim();
+          result.address = (result.address || "") + " м. " + metroMatch[1].trim();
+        }
+        const addressMatch = normalized.match(/(ул\.|улица|проспект|пр-кт|шоссе|ш\.)\s+[A-Za-zА-Яа-яЁё0-9\-\s]+/i);
+        if (addressMatch) {
+          result.address = addressMatch[0].trim();
+        }
+
+        // Город/локация из URL (для Авито/Циан)
+        if (!result.city && url) {
+          const citySlug = url.match(/https?:\/\/[^/]+\/([^/]+)/i);
+          if (citySlug && citySlug[1]) {
+            const slug = citySlug[1];
+            if (slug.toLowerCase() === "moskva" || slug.toLowerCase() === "msk") result.city = "Москва";
+            else if (slug.toLowerCase() === "sankt-peterburg" || slug.toLowerCase() === "spb") result.city = "Санкт-Петербург";
+            else result.city = slug.replace(/_/g, " ");
+          }
+        }
+        if (!result.address && result.city) {
+          result.address = result.city;
+        }
+        return result;
+      }
+
+      function applyParsedData(parsed) {
+        const applied = [];
+        Object.entries(parsed).forEach(([key, val]) => {
+          if (val === undefined || val === null || val === "") return;
+          const current = state.formData[key];
+          if (!current) {
+          state.formData[key] = val;
+          applied.push(`${key}: ${val}`);
+        }
+      });
+        if (parsed.metro && !state.formData.metro) {
+          state.formData.metro = parsed.metro;
+        }
+        // location/address fallback
+        if (parsed.address && !state.formData.address) {
+          state.formData.address = parsed.address;
+        }
+        if (parsed.city && !state.formData.address) {
+          state.formData.address = parsed.city;
+        }
+        updateManualForm();
+        if (applied.length) {
+          elements.parsedSummary.textContent = "Распознали: " + applied.join(", ");
+        } else {
+          elements.parsedSummary.textContent = "Новых параметров не найдено — заполните вручную.";
+        }
+      }
+
+      async function fetchFromUrl(silent = false) {
+        const url = elements.adUrl.value.trim();
+        if (!url) {
+          if (!silent) setFetchStatus("Добавьте ссылку.", "error");
+          return;
+        }
+        if (!silent) setFetchStatus("Загружаем…", "info");
+        try {
+          const res = await fetch("/api/fetch_listing", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url })
+          });
+          if (!res.ok) {
+            let errMsg = `HTTP ${res.status}`;
+            try {
+              const body = await res.json();
+              if (body && body.detail) errMsg = body.detail;
+            } catch (_) {}
+            throw new Error(errMsg);
+          }
+          const data = await res.json();
+          const text = data.text || "";
+          elements.adText.value = text;
+          state.adText = text;
+          state.images = data.images || [];
+          if (data.parsed && typeof data.parsed === "object") {
+            applyParsedData(data.parsed);
+          }
+          const imgNote = state.images.length ? ` Фото: ${state.images.length}.` : "";
+          if (!silent) setFetchStatus(`Текст загружен, можно оценивать.${imgNote}`, "ok");
+          return text;
+        } catch (err) {
+          console.error(err);
+          if (!silent) setFetchStatus(`Не удалось загрузить: ${err.message}`, "error");
+          throw err;
+        }
+      }
+
+      async function pasteFromClipboard() {
+        try {
+          const text = await navigator.clipboard.readText();
+          elements.adText.value = text;
+          state.adText = text;
+          setStatus("Вставлено из буфера.", "ok");
+        } catch {
+          setStatus("Клипборд недоступен.", "error");
+        }
       }
 
       function buildPayload() {
-        errors = {};
-        const payloadObjects = [];
-
-        objects.forEach((obj, index) => {
-          const cleanId = (obj.id || "").trim() || `Object ${index + 1}`;
-          const price = Number(obj.price);
-          const area = Number(obj.area);
-          const district = (obj.district || "").trim();
-          const year = obj.year ? Number(obj.year) : null;
-          const condition = (obj.condition || "").trim();
-          const floor = obj.floor ? Number(obj.floor) : null;
-          const floorsTotal = obj.floors_total ? Number(obj.floors_total) : null;
-
-          const errs = [];
-          if (!price || price <= 0) errs.push("Цена обязательна");
-          if (!area || area <= 0) errs.push("Площадь обязательна");
-          if (floor !== null && floorsTotal !== null && floor > floorsTotal) {
-            errs.push("Этаж не может быть больше этажности");
-          }
-
-          if (errs.length) {
-            errors[index] = errs.join(". ");
-          }
-
-          payloadObjects.push({
-            id: cleanId,
-            price,
-            area,
-            district,
-            year: year || null,
-            condition: condition || "",
-            floor: floor,
-            floors_total: floorsTotal,
-            raw_text: (obj.raw_text || "").trim(),
-          });
-        });
-
-        renderCards();
-
-        return {
-          isValid: Object.values(errors).filter(Boolean).length === 0,
-          payload: { objects: payloadObjects.slice(0, maxObjects) },
+        const data = { ...state.formData };
+        data.address = data.address || elements.adText.value.slice(0, 120) || "Адрес не указан";
+        const propertyData = {
+          type: data.type || "Квартира",
+          location: [
+            data.address || "",
+            data.metro ? `м. ${data.metro}` : "",
+            data.city || "",
+          ].filter(Boolean).join(", ") || elements.adText.value.slice(0, 120) || "Не указан",
+          address: data.address || data.city,
+          metro: data.metro || undefined,
+          images: state.images || [],
+          area: data.area ? Number(data.area) : null,
+          price: data.price ? Number(data.price) : null,
+          rooms: data.rooms ? Number(data.rooms) : null,
+          floor: data.floor ? Number(data.floor) : null,
+          floors_total: data.floors_total ? Number(data.floors_total) : null,
+          year: data.year ? Number(data.year) : null,
+          condition: data.condition || undefined,
+          description: data.notes || elements.adText.value || undefined,
+          source_text: elements.adText.value || undefined,
+          url: elements.adUrl.value || undefined,
         };
+        // Clean undefined/None
+        Object.keys(propertyData).forEach((k) => {
+          if (propertyData[k] === undefined || propertyData[k] === null || propertyData[k] === "" || Number.isNaN(propertyData[k])) {
+            delete propertyData[k];
+          }
+        });
+        return propertyData;
       }
 
-      async function requestAnalysis(payload) {
+      function verdictFromRisk(score) {
+        if (score <= 0.33) return { label: "Выгодно", className: "success" };
+        if (score <= 0.66) return { label: "Нейтрально", className: "warning" };
+        return { label: "Осторожно", className: "danger" };
+      }
+
+      function compactText(text, limit = 260) {
+        if (!text) return "";
+        const trimmed = text.trim();
+        if (trimmed.length <= limit) return trimmed;
+        return trimmed.slice(0, limit).trim() + "…";
+      }
+
+      function fillList(el, items) {
+        el.innerHTML = "";
+        (items || []).forEach((item) => {
+          const li = document.createElement("li");
+          li.textContent = item;
+          el.appendChild(li);
+        });
+      }
+
+      function renderResult(data) {
+        let report = data.report || {};
+        let text = data.report_text || data.raw_response || "";
+        if ((!report || Object.keys(report).length === 0) && text) {
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed === "object") {
+              report = parsed;
+            }
+          } catch (_) {}
+        }
+        const riskScore = typeof report.risk_score === "number" ? report.risk_score : 0.5;
+        const verdict = verdictFromRisk(riskScore);
+        elements.verdict.textContent = `Вердикт: ${verdict.label}`;
+        elements.verdict.className = `pill ${verdict.className}`;
+        elements.summaryText.textContent = compactText(report.summary || text || "Ответ не распознан. Попробуйте ещё раз.");
+
+        const priceMeta = data.price_meta || {};
+        if (report.price_range && report.price_range.min_value !== undefined && report.price_range.max_value !== undefined) {
+          const { min_value, max_value, currency } = report.price_range;
+          elements.priceRange.textContent = `${min_value.toLocaleString()} – ${max_value.toLocaleString()} ${currency || "₽"}`;
+          const center = Math.round((Number(min_value) + Number(max_value)) / 2);
+          elements.priceHint.textContent = `Ориентир: ~${center.toLocaleString()} ${currency || "₽"}`;
+        } else if (priceMeta.price_per_m2) {
+          elements.priceRange.textContent = `${priceMeta.price_per_m2.toLocaleString()} ₽/м²`;
+          const delta = priceMeta.delta_percent ?? 0;
+          const pos = priceMeta.position || "";
+          elements.priceHint.textContent = `${pos} (отклонение ~${delta}% vs ~${priceMeta.baseline_per_m2.toLocaleString()} ₽/м² в ${priceMeta.city})`;
+        } else {
+          elements.priceRange.textContent = "Оценка цены не указана";
+          elements.priceHint.textContent = "Добавьте цену в объявление для точной оценки.";
+        }
+
+        elements.riskFill.style.width = `${Math.min(100, Math.max(0, Math.round(riskScore * 100)))}%`;
+        if (riskScore > 0.66) {
+          elements.riskFill.style.background = "linear-gradient(90deg, #f87171, #ef4444)";
+        } else if (riskScore > 0.33) {
+          elements.riskFill.style.background = "linear-gradient(90deg, #f6c344, #f59e0b)";
+        } else {
+          elements.riskFill.style.background = "linear-gradient(90deg, #5bd389, #38b26f)";
+        }
+        elements.riskLabel.textContent = report.risk_score !== undefined ? `Риск: ${(riskScore * 100).toFixed(0)}%` : "Риск не оценён";
+
+        const pros = report.pros && report.pros.length ? report.pros : ["Уточните плюсы по дому/району."];
+        const cons = report.cons && report.cons.length ? report.cons : ["Уточните минусы/риски (этаж, шум, документы)."];
+        const checksList = report.checks && report.checks.length ? report.checks : (report.risks || []);
+        const checks = checksList.length
+          ? checksList
+          : ["Проверить документы и обременения", "Организовать осмотр", "Сравнить с аналогами по цене/м²"];
+
+        fillList(elements.prosList, pros);
+        fillList(elements.consList, cons);
+        fillList(elements.checksList, checks);
+
+        elements.nextStep.textContent = report.recommendation
+          ? `Следующий шаг: ${report.recommendation}`
+          : "Следующий шаг: запросите документы и организуйте осмотр.";
+      }
+
+      async function evaluate() {
+        let adTextVal = "";
+        // Если во вкладке "Вставить объявление" — всегда подтягиваем ссылку/текст заново.
+        if (state.activeTab === "paste") {
+          try {
+            adTextVal = await fetchFromUrl(true);
+            elements.adText.value = adTextVal || "";
+          } catch (_) {
+            setStatus("Не удалось загрузить ссылку.", "error");
+            return;
+          }
+          const textForParse = adTextVal || elements.adText.value || "";
+          state.adText = textForParse;
+          const parsed = parseListingText(textForParse, elements.adUrl.value || "");
+          applyParsedData(parsed);
+        }
+
+        if (state.activeTab === "paste") {
+          state.adText = elements.adText.value;
+        }
+        const payload = buildPayload();
+        if (!payload.location && !payload.description && !payload.address) {
+          setStatus("Добавьте текст или заполните поля вручную.", "error");
+          return;
+        }
+        setStatus("Оцениваем…", "info");
+        elements.evaluateBtn.disabled = true;
         try {
-          const res = await fetch("/api/analyze", {
+          const res = await fetch("/analyze", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ property_data: payload })
           });
           if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
+            let errMsg = `HTTP ${res.status}`;
+            try {
+              const body = await res.json();
+              if (body && body.detail) {
+                errMsg = Array.isArray(body.detail) ? body.detail.map((d) => d.msg || d).join("; ") : body.detail;
+              }
+            } catch (_) {}
+            throw new Error(errMsg);
           }
-          return await res.json();
-        } catch (err) {
-          console.warn("Falling back to mock response:", err);
-          return new Promise((resolve) =>
-            setTimeout(() => resolve(mockResponse(payload)), 700)
-          );
-        }
-      }
-
-      function mockResponse(payload) {
-        const scores = {};
-        payload.objects.forEach((obj, idx) => {
-          const ppm = obj.price && obj.area ? obj.price / obj.area : 0;
-          let score = 100 - Math.min(ppm / 1000 * 10, 60);
-          score += Math.min(Math.max(obj.area - 45, 0) / 10 * 2.5, 8);
-          if (obj.year) score += Math.min((obj.year - 2000) / 5, 6);
-          if (obj.condition) score += 2;
-          scores[obj.id || `Obj ${idx + 1}`] = Math.round(Math.max(25, Math.min(95, score)));
-        });
-        const winner_id = Object.keys(scores).sort((a, b) => scores[b] - scores[a])[0];
-        return {
-          winner_id,
-          score: scores,
-          reasons: [
-            "Заглушка: лучшее соотношение цена/метр у победителя.",
-            "Заглушка: площадь и год постройки выше среднего.",
-            "Заглушка: базовая ликвидность в районе стабильная."
-          ],
-          risks: ["Проверьте документы и обременения.", "Уточните состояние коммуникаций."],
-          checks: ["Осмотр на месте", "Сравнение с аналогами", "Запрос выписки ЕГРН"],
-          summary: `${winner_id} выглядит чуть выгоднее по заглушечным расчётам. Дальше нужен реальный запрос к бэкенду.`,
-        };
-      }
-
-      function showResult(data) {
-        resultSection.classList.remove("hidden");
-        winnerIdEl.textContent = data.winner_id || "-";
-        summaryTextEl.textContent = data.summary || "";
-
-        const scoreEntries = Object.entries(data.score || {});
-        scorePills.innerHTML = "";
-        scoreEntries.forEach(([id, val]) => {
-          const pill = document.createElement("div");
-          pill.className = "pill-score";
-          pill.textContent = `${id}: ${val}`;
-          scorePills.appendChild(pill);
-        });
-
-        function fillList(el, items) {
-          el.innerHTML = "";
-          (items || []).forEach((item) => {
-            const li = document.createElement("li");
-            li.textContent = item;
-            el.appendChild(li);
-          });
-        }
-        fillList(reasonsList, data.reasons);
-        fillList(risksList, data.risks);
-        fillList(checksList, data.checks);
-
-        jsonOutput.textContent = JSON.stringify(data, null, 2);
-      }
-
-      function reset() {
-        objects = [blankObject(0), blankObject(1)];
-        errors = {};
-        rawPaste.value = "";
-        parseStatus.textContent = "";
-        setStatus("");
-        resultSection.classList.add("hidden");
-        renderCards();
-      }
-
-      function parseFromRaw() {
-        parseStatus.textContent = "";
-        const raw = rawPaste.value.trim();
-        if (!raw) {
-          parseStatus.textContent = "Поле пустое.";
-          return;
-        }
-        try {
-          const parsed = JSON.parse(raw);
-          let arr = [];
-          if (Array.isArray(parsed)) {
-            arr = parsed;
-          } else if (parsed && Array.isArray(parsed.objects)) {
-            arr = parsed.objects;
-          } else if (parsed && typeof parsed === "object") {
-            arr = [parsed];
-          }
-          if (!arr.length) throw new Error("Нет объектов");
-
-          objects = arr.slice(0, maxObjects).map((item, idx) => ({
-            id: item.id || letters[idx] || `Obj ${idx + 1}`,
-            price: item.price ?? "",
-            area: item.area ?? "",
-            district: item.district ?? item.address ?? "",
-            year: item.year ?? "",
-            condition: item.condition ?? item.state ?? "",
-            floor: item.floor ?? "",
-            floors_total: item.floors_total ?? item.floors ?? "",
-            raw_text: item.raw_text ?? "",
-          }));
-
-          while (objects.length < 2) {
-            objects.push(blankObject(objects.length));
-          }
-
-          parseStatus.textContent = `Заполнено объектов: ${objects.length}`;
-          renderCards();
-        } catch (err) {
-          parseStatus.textContent = "Не получилось разобрать JSON. Текст можно вставить вручную.";
-          if (!objects.length) {
-            objects = [blankObject(0)];
-          }
-          objects[0].raw_text = raw;
-          renderCards();
-        }
-      }
-
-      addObjectBtn.addEventListener("click", () => {
-        if (objects.length < maxObjects) {
-          objects.push(blankObject(objects.length));
-          renderCards();
-        }
-      });
-
-      compareBtn.addEventListener("click", async () => {
-        const { isValid, payload } = buildPayload();
-        if (!isValid) {
-          setStatus("Исправьте обязательные поля.", "error");
-          return;
-        }
-        setStatus("Сравниваем...", "info");
-        compareBtn.disabled = true;
-        try {
-          const data = await requestAnalysis(payload);
-          showResult(data);
+          const data = await res.json();
+          renderResult(data);
           setStatus("Готово.", "ok");
         } catch (err) {
           console.error(err);
-          setStatus("Ошибка запроса.", "error");
+          setStatus(`Не удалось получить оценку: ${err.message}`, "error");
         } finally {
-          compareBtn.disabled = false;
+          elements.evaluateBtn.disabled = false;
         }
+      }
+
+      function resetForm() {
+        state.adText = "";
+        state.url = "";
+        Object.keys(state.formData).forEach((k) => state.formData[k] = "");
+        state.formData.type = "Квартира";
+        elements.adText.value = "";
+        elements.adUrl.value = "";
+        elements.parsedSummary.textContent = "";
+        updateManualForm();
+        setStatus("");
+      }
+
+      // Events
+      elements.tabs.forEach((btn) => {
+        btn.addEventListener("click", () => switchTab(btn.dataset.tab));
       });
+      elements.pasteBtn.addEventListener("click", pasteFromClipboard);
+      elements.fetchUrlBtn.addEventListener("click", fetchFromUrl);
+      elements.evaluateBtn.addEventListener("click", evaluate);
+      elements.resetBtn.addEventListener("click", resetForm);
 
-      resetBtn.addEventListener("click", reset);
-      parseBtn.addEventListener("click", parseFromRaw);
-
-      tabButtons.forEach((btn) => {
-        btn.addEventListener("click", () => {
-          tabButtons.forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          const tab = btn.dataset.tab;
-          summaryTab.classList.toggle("active", tab === "summary");
-          jsonTab.classList.toggle("active", tab === "json");
+      elements.manualFields.forEach((input) => {
+        input.addEventListener("input", (e) => {
+          const key = e.target.dataset.field;
+          state.formData[key] = e.target.value;
         });
       });
 
-      copyJsonBtn.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(jsonOutput.textContent || "");
-          copyStatus.textContent = "Скопировано";
-          setTimeout(() => (copyStatus.textContent = ""), 1200);
-        } catch {
-          copyStatus.textContent = "Не удалось скопировать";
-        }
-      });
-
-      reset();
+      // Init
+      updateManualForm();
+      renderResult({ report: {}, report_text: "" });
     })();
   </script>
 </body>

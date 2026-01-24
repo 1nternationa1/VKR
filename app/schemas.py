@@ -16,15 +16,15 @@ class AnalyzeRequest(BaseModel):
         if not isinstance(value, dict):
             raise ValueError("property_data must be a JSON object")
 
-        property_type = value.get("type") or value.get("property_type")
+        property_type = value.get("type") or value.get("property_type") or "Квартира"
         location = value.get("location") or value.get("address") or value.get("city")
-        area = value.get("area") or value.get("square_meters") or value.get("sqft")
-
-        if not property_type:
-            raise ValueError("property_data must include 'type' or 'property_type'")
         if not location:
-            raise ValueError("property_data must include 'location', 'address', or 'city'")
+            desc = value.get("description") or value.get("source_text")
+            location = (str(desc)[:80] + "...") if desc else "Не указан"
+        value["type"] = property_type
+        value["location"] = location
 
+        area = value.get("area") or value.get("square_meters") or value.get("sqft")
         if area is not None:
             try:
                 numeric_area = float(area)
@@ -58,6 +58,7 @@ class ReportModel(BaseModel):
     pros: List[str] = Field(default_factory=list)
     cons: List[str] = Field(default_factory=list)
     raw_notes: Optional[str] = None
+    checks: List[str] = Field(default_factory=list)
 
     @validator("pros", "cons", each_item=True)
     def clean_items(cls, value: str) -> str:
