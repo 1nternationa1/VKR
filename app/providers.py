@@ -61,8 +61,13 @@ class CloudProvider(AIProvider):
                 except httpx.HTTPStatusError as exc:
                     last_exc = exc
                     text = exc.response.text.lower()
-                    # If endpoint/model is missing, try the next candidate.
-                    if exc.response.status_code in (403, 404) or "not found" in text or "unknown" in text:
+                    # If endpoint/model is missing or payload schema rejected, try the next candidate.
+                    if (
+                        exc.response.status_code in (400, 403, 404)
+                        or "not found" in text
+                        or "unknown" in text
+                        or "invalid json" in text
+                    ):
                         continue
                     raise RuntimeError(f"LLM HTTP error: {exc.response.status_code} {exc.response.text}") from exc
                 except httpx.RequestError as exc:
