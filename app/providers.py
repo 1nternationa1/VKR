@@ -108,7 +108,6 @@ class CloudProvider(AIProvider):
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": 0.2,
         }
         return await self._chat(payload)
 
@@ -139,7 +138,6 @@ class CloudProvider(AIProvider):
                 },
                 {"role": "user", "text": prompt},
             ],
-            "temperature": 0.25,
         }
         return await self._chat(payload)
 
