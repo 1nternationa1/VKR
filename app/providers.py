@@ -16,9 +16,9 @@ class AIProvider(ABC):
 
 class CloudProvider(AIProvider):
     def __init__(self) -> None:
-        self.api_url = os.getenv("CLOUD_API_URL")
+        self.api_url = os.getenv("CLOUD_API_URL", "https://kong-proxy.yc.amvera.ru/api/v1")
         self.api_key = os.getenv("CLOUD_API_KEY")
-        self.model = os.getenv("CLOUD_MODEL", "gpt-4o-mini")
+        self.model = os.getenv("CLOUD_MODEL", "gpt-5")
         self.timeout = float(os.getenv("CLOUD_TIMEOUT", "20"))
 
     async def _chat(self, payload: Dict[str, Any]) -> str:
