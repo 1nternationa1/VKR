@@ -32,16 +32,14 @@ class CloudProvider(AIProvider):
         }
 
         base_url = self.api_url.rstrip("/")
-        if "/models/" in base_url:
-            final_url = base_url
+        url_candidates: List[str] = []
+        if "/models/" in base_url or "/chat/completions" in base_url:
+            url_candidates.append(base_url)
         else:
-            # target the /models/<inference> endpoint; default to gpt inference
-            inference = "gpt"
-            if self.model.startswith("gpt-"):
-                inference = "gpt"
-            elif self.model.startswith("llama"):
-                inference = "llama"
-            final_url = f"{base_url}/models/{inference}"
+            # Try the documented Amvera path first, then fall back to OpenAI-compatible path.
+            inference = "gpt" if self.model.startswith("gpt-") else "llama"
+            url_candidates.append(f"{base_url}/models/{inference}")
+            url_candidates.append(f"{base_url}/chat/completions")
 
         # Try primary model, then fallback if configured/access denied.
         models_to_try = [payload.get("model") or self.model]
@@ -53,45 +51,46 @@ class CloudProvider(AIProvider):
 
         last_exc: httpx.HTTPStatusError | None = None
 
-        for model_name in models_to_try:
-            payload["model"] = model_name
-            try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.post(final_url, json=payload, headers=headers)
-                    response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                last_exc = exc
-                text = exc.response.text.lower()
-                if exc.response.status_code in (403, 404) and "model" in text:
-                    # try next model
-                    continue
-                raise RuntimeError(f"LLM HTTP error: {exc.response.status_code} {exc.response.text}") from exc
-            except httpx.RequestError as exc:
-                raise RuntimeError(f"LLM request failed: {exc}") from exc
+        for final_url in url_candidates:
+            for model_name in models_to_try:
+                payload["model"] = model_name
+                try:
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        response = await client.post(final_url, json=payload, headers=headers)
+                        response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    last_exc = exc
+                    text = exc.response.text.lower()
+                    # If endpoint/model is missing, try the next candidate.
+                    if exc.response.status_code in (403, 404) or "not found" in text or "unknown" in text:
+                        continue
+                    raise RuntimeError(f"LLM HTTP error: {exc.response.status_code} {exc.response.text}") from exc
+                except httpx.RequestError as exc:
+                    raise RuntimeError(f"LLM request failed: {exc}") from exc
 
-            body = response.json()
-            raw_content: Any = (
-                body.get("choices", [{}])[0].get("message", {}).get("content") if isinstance(body, dict) else None
-            )
-
-            if not raw_content:
-                # Amvera inference may return message.text
-                raw_content = (
-                    body.get("message", {}).get("text")
-                    if isinstance(body, dict)
-                    else None
+                body = response.json()
+                raw_content: Any = (
+                    body.get("choices", [{}])[0].get("message", {}).get("content") if isinstance(body, dict) else None
                 )
 
-            if not raw_content:
-                raw_content = json.dumps(body)
+                if not raw_content:
+                    # Amvera inference may return message.text
+                    raw_content = (
+                        body.get("message", {}).get("text")
+                        if isinstance(body, dict)
+                        else None
+                    )
 
-            if isinstance(raw_content, (dict, list)):
-                raw_content = json.dumps(raw_content)
+                if not raw_content:
+                    raw_content = json.dumps(body)
 
-            if not raw_content:
-                continue
+                if isinstance(raw_content, (dict, list)):
+                    raw_content = json.dumps(raw_content)
 
-            return str(raw_content)
+                if not raw_content:
+                    continue
+
+                return str(raw_content)
 
         if last_exc:
             raise RuntimeError(f"LLM HTTP error: {last_exc.response.status_code} {last_exc.response.text}") from last_exc
@@ -105,8 +104,8 @@ class CloudProvider(AIProvider):
             '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
         )
         messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_text}]},
-            {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": prompt},
         ]
         payload = {
             "model": self.model,
@@ -137,9 +136,9 @@ class CloudProvider(AIProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."}],
+                    "content": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста.",
                 },
-                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                {"role": "user", "content": prompt},
             ],
         }
         return await self._chat(payload)
