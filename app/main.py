@@ -612,14 +612,19 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
 
     if not raw_html:
         logger.warning("fetch_listing failed for %s: %s", url, "; ".join(errors))
-        raise HTTPException(status_code=502, detail=f"Cannot fetch listing. Errors: {'; '.join(errors)}")
+        fallback_msg = (
+            "Не удалось загрузить объявление автоматически. "
+            "Скопируйте текст и параметры объявления вручную."
+        )
+        # Возвращаем мягкий ответ, чтобы UI мог продолжить работу без 502.
+        return {"text": "", "images": [], "parsed": {}, "error": fallback_msg}
 
     text = _html_to_text(raw_html)
     if not text:
         raise HTTPException(status_code=422, detail="Cannot extract text from the provided link")
 
     images = [img for img in images[:6] if isinstance(img, str)]
-    return {"text": text[:6000], "images": images, "parsed": parsed_fields}
+    return {"text": text[:6000], "images": images, "parsed": parsed_fields, "error": None}
 
 
 @app.get("/history", response_class=HTMLResponse)
