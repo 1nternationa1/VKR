@@ -26,9 +26,17 @@ class CloudProvider(AIProvider):
             raise RuntimeError("Cloud provider is not configured. Set CLOUD_API_URL and CLOUD_API_KEY.")
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "X-Auth-Token": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key}",  # fallback
             "Content-Type": "application/json",
         }
+
+        base_url = self.api_url.rstrip("/")
+        if "/models/" in base_url:
+            final_url = base_url
+        else:
+            # default gpt endpoint
+            final_url = f"{base_url}/models/gpt"
 
         # Try primary model, then fallback if configured/access denied.
         models_to_try = [payload.get("model") or self.model]
@@ -44,7 +52,7 @@ class CloudProvider(AIProvider):
             payload["model"] = model_name
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.post(self.api_url, json=payload, headers=headers)
+                    response = await client.post(final_url, json=payload, headers=headers)
                     response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 last_exc = exc
@@ -58,15 +66,16 @@ class CloudProvider(AIProvider):
 
             body = response.json()
             raw_content: Any = (
-                body.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content")
-                if isinstance(body, dict)
-                else None
+                body.get("choices", [{}])[0].get("message", {}).get("content") if isinstance(body, dict) else None
             )
 
             if not raw_content:
-                raw_content = body.get("content") if isinstance(body, dict) else None
+                # Amvera inference may return message.text
+                raw_content = (
+                    body.get("message", {}).get("text")
+                    if isinstance(body, dict)
+                    else None
+                )
 
             if not raw_content:
                 raw_content = json.dumps(body)
@@ -85,21 +94,21 @@ class CloudProvider(AIProvider):
 
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
         prompt = build_prompt(property_data)
+        messages = [
+            {
+                "role": "system",
+                "text": (
+                    "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
+                    '{"summary":"","recommendation":"","risk_score":0,"price_range":{"min_value":0,"max_value":0,"currency":"RUB"},'
+                    '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
+                ),
+            },
+            {"role": "user", "text": prompt},
+        ]
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
-                        '{"summary":"","recommendation":"","risk_score":0,"price_range":{"min_value":0,"max_value":0,"currency":"RUB"},'
-                        '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "temperature": 0.2,
-            "response_format": {"type": "json_object"},
         }
         return await self._chat(payload)
 
@@ -126,12 +135,11 @@ class CloudProvider(AIProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста.",
+                    "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста.",
                 },
-                {"role": "user", "content": prompt},
+                {"role": "user", "text": prompt},
             ],
             "temperature": 0.25,
-            "response_format": {"type": "json_object"},
         }
         return await self._chat(payload)
 
