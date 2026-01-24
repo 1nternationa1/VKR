@@ -94,16 +94,20 @@ class CloudProvider(AIProvider):
 
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
         prompt = build_prompt(property_data)
+        system_text = (
+            "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
+            '{"summary":"","recommendation":"","risk_score":0,"price_range":{"min_value":0,"max_value":0,"currency":"RUB"},'
+            '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
+        )
         messages = [
             {
                 "role": "system",
-                "text": (
-                    "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
-                    '{"summary":"","recommendation":"","risk_score":0,"price_range":{"min_value":0,"max_value":0,"currency":"RUB"},'
-                    '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
-                ),
+                "content": [{"type": "text", "text": system_text}],
             },
-            {"role": "user", "text": prompt},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}],
+            },
         ]
         payload = {
             "model": self.model,
@@ -134,9 +138,9 @@ class CloudProvider(AIProvider):
             "messages": [
                 {
                     "role": "system",
-                    "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста.",
+                    "content": [{"type": "text", "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."}],
                 },
-                {"role": "user", "text": prompt},
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
             ],
         }
         return await self._chat(payload)
