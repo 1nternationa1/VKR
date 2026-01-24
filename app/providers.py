@@ -35,8 +35,13 @@ class CloudProvider(AIProvider):
         if "/models/" in base_url:
             final_url = base_url
         else:
-            # default gpt endpoint
-            final_url = f"{base_url}/models/gpt"
+            # target the /models/<inference> endpoint; default to gpt inference
+            inference = "gpt"
+            if self.model.startswith("gpt-"):
+                inference = "gpt"
+            elif self.model.startswith("llama"):
+                inference = "llama"
+            final_url = f"{base_url}/models/{inference}"
 
         # Try primary model, then fallback if configured/access denied.
         models_to_try = [payload.get("model") or self.model]
@@ -100,8 +105,8 @@ class CloudProvider(AIProvider):
             '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
         )
         messages = [
-            {"role": "system", "text": system_text},
-            {"role": "user", "text": prompt},
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": prompt},
         ]
         payload = {
             "model": self.model,
@@ -130,8 +135,8 @@ class CloudProvider(AIProvider):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."},
-                {"role": "user", "text": prompt},
+                {"role": "system", "content": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."},
+                {"role": "user", "content": prompt},
             ],
         }
         return await self._chat(payload)
