@@ -100,14 +100,8 @@ class CloudProvider(AIProvider):
             '"pros":[],"cons":[],"checks":[]} без лишнего текста.'
         )
         messages = [
-            {
-                "role": "system",
-                "content": [{"type": "text", "text": system_text}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}],
-            },
+            {"role": "system", "text": system_text},
+            {"role": "user", "text": prompt},
         ]
         payload = {
             "model": self.model,
@@ -136,11 +130,8 @@ class CloudProvider(AIProvider):
         payload = {
             "model": self.model,
             "messages": [
-                {
-                    "role": "system",
-                    "content": [{"type": "text", "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."}],
-                },
-                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                {"role": "system", "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."},
+                {"role": "user", "text": prompt},
             ],
         }
         return await self._chat(payload)
