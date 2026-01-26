@@ -63,6 +63,21 @@ def _to_amvera_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return out
 
 
+def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    OpenAI-style schema: {"role": "...", "content": "..."}.
+    Accepts legacy {"text": "..."} and normalizes to content.
+    """
+    out: List[Dict[str, str]] = []
+    for m in messages or []:
+        role = str(m.get("role") or "user")
+        content = m.get("content")
+        if content is None:
+            content = m.get("text")
+        out.append({"role": role, "content": "" if content is None else str(content)})
+    return out
+
+
 # ---------------------------
 # Provider interface
 # ---------------------------
@@ -82,7 +97,7 @@ class CloudProvider(AIProvider):
         self.api_url = os.getenv("CLOUD_API_URL", "https://kong-proxy.yc.amvera.ru/api/v1")
         self.api_key = os.getenv("CLOUD_API_KEY")
         self.model = os.getenv("CLOUD_MODEL", "gpt-5")
-        self.timeout = float(os.getenv("CLOUD_TIMEOUT", "20"))
+        self.timeout = float(os.getenv("CLOUD_TIMEOUT", "30"))
         self.temperature = float(os.getenv("CLOUD_TEMPERATURE", "0.2"))
 
     async def _chat(self, payload: Dict[str, Any]) -> str:
@@ -131,6 +146,8 @@ class CloudProvider(AIProvider):
                 # If hitting Amvera inference endpoint, convert messages schema to {"text":...}
                 if "/models/" in final_url:
                     attempt["messages"] = _to_amvera_messages(attempt.get("messages", []))
+                elif "/chat/completions" in final_url:
+                    attempt["messages"] = _to_openai_messages(attempt.get("messages", []))
 
                 # Ensure outbound JSON is valid (no NaN/Inf, no exotic types)
                 # Also gives a clean error before network if something is wrong.
