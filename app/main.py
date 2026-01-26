@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import logging
+import random
 import re
 import html
 from typing import Any, Dict, Optional, List
@@ -566,11 +568,24 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     if not url.lower().startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
 
-    proxies = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or None
+    # Прокси только для загрузки объявлений (не влияет на другие запросы)
+    proxies = {
+        "http://": os.getenv("LISTING_HTTP_PROXY") or os.getenv("HTTP_PROXY") or None,
+        "https://": os.getenv("LISTING_HTTPS_PROXY") or os.getenv("HTTPS_PROXY") or None,
+    }
+    if not proxies["http://"] and not proxies["https://"]:
+        proxies = None
 
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    ]
     headers = {
-        "User-Agent": "ValuatorBot/1.0 (+https://example.com)",
+        "User-Agent": random.choice(user_agents),
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.6",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Referer": "https://www.avito.ru/",
     }
 
     async def _fetch_direct(target: str) -> str:
@@ -579,9 +594,17 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
             response.raise_for_status()
             return response.text
 
-    async def _fetch_via_proxy(target: str) -> str:
+    async def _fetch_via_jina(target: str) -> str:
         proxy_url = f"https://r.jina.ai/{target}"
         async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            response = await client.get(proxy_url, follow_redirects=True)
+            response.raise_for_status()
+            return response.text
+
+    async def _fetch_via_textise(target: str) -> str:
+        """Фолбэк через textise-dot-iitty / allorigins-класс (через r.jina.ai)."""
+        proxy_url = f"https://r.jina.ai/https://r.jina.ai/{target}"
+        async with httpx.AsyncClient(timeout=18.0, headers=headers) as client:
             response = await client.get(proxy_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
@@ -591,7 +614,8 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     # Try proxy first (лучше для заблокированных RU сайтов), затем прямой доступ.
     images: List[str] = []
     parsed_fields: Dict[str, Any] = {}
-    for fetcher in (_fetch_via_proxy, _fetch_direct):
+    fetch_chain = (_fetch_via_jina, _fetch_via_textise, _fetch_direct)
+    for fetcher in fetch_chain:
         try:
             raw_html = await fetcher(url)
             if raw_html and not images:
@@ -609,6 +633,7 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
             errors.append(f"{exc.response.status_code}: {exc.response.text[:200]}")
         except httpx.RequestError as exc:
             errors.append(str(exc))
+        await asyncio.sleep(0.5)
 
     if not raw_html:
         logger.warning("fetch_listing failed for %s: %s", url, "; ".join(errors))
