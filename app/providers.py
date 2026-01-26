@@ -194,8 +194,8 @@ class CloudProvider(AIProvider):
         )
 
         messages = [
-            {"role": "system", "content": system_text},
-            {"role": "user", "content": prompt},
+            {"role": "system", "text": system_text},
+            {"role": "user", "text": prompt},
         ]
 
         payload = {
@@ -228,8 +228,8 @@ class CloudProvider(AIProvider):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "text": "Ты аналитик недвижимости. Отвечай строго валидным JSON без лишнего текста."},
+                {"role": "user", "text": prompt},
             ],
         }
 
