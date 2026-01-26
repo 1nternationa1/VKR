@@ -122,14 +122,17 @@ class CloudProvider(AIProvider):
         for final_url in url_candidates:
             for model_name in models_to_try:
                 # IMPORTANT: do not mutate the original payload across attempts
-                attempt: Dict[str, Any] = dict(payload)
-                attempt["model"] = model_name
-
-                # Add temperature if not set (won't hurt if ignored by backend)
-                attempt.setdefault("temperature", self.temperature)
-
-                # Amvera schema expects {"text": ...}; применяем всегда.
-                attempt["messages"] = _to_amvera_messages(attempt.get("messages", []))
+                if "/models/" in final_url:
+                    # Use minimal schema for Amvera models endpoint
+                    attempt: Dict[str, Any] = {
+                        "model": model_name,
+                        "messages": _to_amvera_messages(payload.get("messages", [])),
+                    }
+                else:
+                    attempt = dict(payload)
+                    attempt["model"] = model_name
+                    attempt["messages"] = _to_amvera_messages(attempt.get("messages", []))
+                    attempt.setdefault("temperature", self.temperature)
 
                 # Ensure outbound JSON is valid (no NaN/Inf, no exotic types)
                 # Also gives a clean error before network if something is wrong.
