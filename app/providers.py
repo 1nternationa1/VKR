@@ -126,12 +126,6 @@ class CloudProvider(AIProvider):
 
         # Try primary model, then fallback models
         models_to_try = [payload.get("model") or self.model]
-        fallback_model = os.getenv("CLOUD_MODEL_FALLBACK")
-        if fallback_model and fallback_model not in models_to_try:
-            models_to_try.append(fallback_model)
-        # Optional last-resort legacy, in case gateway maps it
-        if self.model != "gpt-3.5-turbo-0125" and "gpt-3.5-turbo-0125" not in models_to_try:
-            models_to_try.append("gpt-3.5-turbo-0125")
 
         last_exc: Optional[httpx.HTTPStatusError] = None
 
