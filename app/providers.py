@@ -47,6 +47,24 @@ def _strict_json_dumps(obj: Any) -> str:
     return json.dumps(safe, ensure_ascii=False, allow_nan=False)
 
 
+def _filter_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Оставляем только поля, введённые пользователем в форме оценки."""
+    allowed_keys = {
+        "type",
+        "location",
+        "address",
+        "price",
+        "area",
+        "rooms",
+        "floor",
+        "floors_total",
+        "year",
+        "condition",
+        "notes",
+    }
+    return {k: v for k, v in data.items() if k in allowed_keys and v not in (None, "", [])}
+
+
 def _to_amvera_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
     Amvera /models/gpt expects: [{"role":"system|user|assistant","text":"..."}]
@@ -90,8 +108,6 @@ class CloudProvider(AIProvider):
             raise RuntimeError("Cloud provider is not configured. Set CLOUD_API_URL and CLOUD_API_KEY.")
 
         headers = {
-            # Some gateways accept one or both; keep both for compatibility.
-            "X-Auth-Token": f"Bearer {self.api_key}",
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
@@ -187,6 +203,8 @@ class CloudProvider(AIProvider):
 
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
         prompt = build_prompt(property_data)
+        filtered = _filter_property_data(property_data)
+        prompt = build_prompt(filtered)
 
         system_text = (
             "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
