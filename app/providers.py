@@ -92,6 +92,18 @@ def _to_amvera_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return out
 
 
+def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """OpenAI chat/completions expects 'content' instead of 'text'."""
+    out: List[Dict[str, str]] = []
+    for m in messages or []:
+        role = str(m.get("role") or "user")
+        content = m.get("content")
+        if content is None:
+            content = m.get("text")
+        out.append({"role": role, "content": "" if content is None else str(content)})
+    return out
+
+
 # ---------------------------
 # Provider interface
 # ---------------------------
@@ -155,10 +167,12 @@ class CloudProvider(AIProvider):
                         "messages": _to_amvera_messages(payload.get("messages", [])),
                     }
                 else:
-                    attempt = dict(payload)
-                    attempt["model"] = model_name
-                    attempt["messages"] = _to_amvera_messages(attempt.get("messages", []))
-                    attempt.setdefault("temperature", self.temperature)
+                    # OpenAI-compatible chat/completions schema
+                    attempt = {
+                        "model": model_name,
+                        "messages": _to_openai_messages(payload.get("messages", [])),
+                        "temperature": payload.get("temperature", self.temperature),
+                    }
 
                 # Ensure outbound JSON is valid (no NaN/Inf, no exotic types)
                 # Also gives a clean error before network if something is wrong.
