@@ -274,9 +274,109 @@ def _extract_image_urls(html_content: str, base_url: str, limit: int = 6) -> Lis
     return urls
 
 
+def _parse_meta_tags(raw_html: str) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """
+    Extract meta tags into two lookup dicts:
+    - meta_by_prop: property/itemprop -> [content...]
+    - meta_by_name: name -> [content...]
+    """
+    meta_by_prop: dict[str, list[str]] = {}
+    meta_by_name: dict[str, list[str]] = {}
+
+    for tag in re.finditer(r"<meta\s+[^>]*?>", raw_html, flags=re.IGNORECASE):
+        attrs = dict(
+            (k.lower(), v)
+            for k, v in re.findall(r'([a-zA-Z0-9:_-]+)\s*=\s*["\'](.*?)["\']', tag.group(0))
+        )
+        if not attrs:
+            continue
+        content = attrs.get("content") or attrs.get("value")
+        if not content:
+            continue
+        prop = attrs.get("property") or attrs.get("itemprop")
+        name = attrs.get("name")
+        if prop:
+            meta_by_prop.setdefault(prop.lower(), []).append(content)
+        if name:
+            meta_by_name.setdefault(name.lower(), []).append(content)
+
+    return meta_by_prop, meta_by_name
+
+
+def _extract_listing_from_meta(raw_html: str) -> Dict[str, Any]:
+    """Best-effort extraction using only meta/link tags (works on saved Avito pages)."""
+    meta_by_prop, meta_by_name = _parse_meta_tags(raw_html)
+
+    def _get_prop(key: str) -> Optional[str]:
+        vals = meta_by_prop.get(key.lower())
+        return vals[0] if vals else None
+
+    def _get_name(key: str) -> Optional[str]:
+        vals = meta_by_name.get(key.lower())
+        return vals[0] if vals else None
+
+    images: List[str] = []
+    for val in meta_by_prop.get("og:image", []):
+        if val not in images:
+            images.append(val)
+    # image_src link fallback
+    for match in re.findall(r'<link[^>]+rel=["\']image_src["\'][^>]+href=["\']([^"\']+)["\']', raw_html, flags=re.IGNORECASE):
+        if match not in images:
+            images.append(match)
+
+    data: Dict[str, Any] = {
+        "title": _get_prop("og:title") or _get_name("mrc__share_title") or _get_name("title"),
+        "description": _get_name("description") or _get_prop("og:description"),
+        "url": _get_prop("og:url"),
+        "price": _get_prop("product:price:amount"),
+        "currency": _get_prop("product:price:currency"),
+        "seller": _get_prop("vk:seller_name") or _get_name("vk:seller_name"),
+        "locale": _get_prop("og:locale"),
+        "country": _get_prop("og:country-name"),
+        "images": images,
+        "image_alts": meta_by_prop.get("og:image:alt", []),
+    }
+    return {k: v for k, v in data.items() if v not in (None, "", [], {})}
+
+
 def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
     """Lightweight extraction of key fields from listing HTML/JSON snippets."""
     data: Dict[str, Any] = {}
+
+    def _to_int(val: Any) -> Optional[int]:
+        if val is None:
+            return None
+        try:
+            if isinstance(val, (int, float)):
+                return int(val)
+            norm = str(val).replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+            return int(float(norm))
+        except Exception:
+            return None
+
+    def _to_float(val: Any) -> Optional[float]:
+        if val is None:
+            return None
+        try:
+            if isinstance(val, (int, float)):
+                return float(val)
+            norm = str(val).replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+            return float(norm)
+        except Exception:
+            return None
+
+    # 1) Meta-tag driven extraction (robust for saved Avito HTML)
+    meta_fields = _extract_listing_from_meta(raw_html)
+    for key, value in meta_fields.items():
+        if key == "price":
+            num = _to_int(value)
+            if num:
+                data["price"] = num
+            continue
+        if key in ("images", "image_alts"):
+            data[key] = value
+            continue
+        data.setdefault(key, value)
 
     def _search_num(pattern: str) -> Optional[float]:
         m = re.search(pattern, raw_html, flags=re.IGNORECASE)
@@ -287,22 +387,22 @@ def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
                 return None
         return None
 
-    # Numbers
+    # Numbers (from embedded JSON)
     price = _search_num(r'"price"\s*:\s*([0-9]{4,})')
     area = _search_num(r'"area"\s*:\s*([0-9]+(?:\.[0-9]+)?)')
     rooms = _search_num(r'"rooms(?:Count)?"\s*:\s*([0-9]+)')
     floor = _search_num(r'"floor"\s*:\s*([0-9]+)')
     floors_total = _search_num(r'"floorsTotal"\s*:\s*([0-9]+)')
 
-    if price:
+    if price and "price" not in data:
         data["price"] = int(price)
-    if area:
+    if area and "area" not in data:
         data["area"] = area
-    if rooms:
+    if rooms and "rooms" not in data:
         data["rooms"] = int(rooms)
-    if floor:
+    if floor and "floor" not in data:
         data["floor"] = int(floor)
-    if floors_total:
+    if floors_total and "floors_total" not in data:
         data["floors_total"] = int(floors_total)
 
     # Address / city / metro
@@ -339,6 +439,40 @@ def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
     if metros:
         data["metro"] = metros[0]
         data["metros"] = metros
+
+    # Numbers from meta title/description like "1-к. квартира, 43 м², 5/9 эт."
+    meta_text = " ".join(
+        str(x)
+        for x in (
+            data.get("title"),
+            data.get("description"),
+        )
+        if x
+    )
+    if meta_text:
+        if "area" not in data:
+            m_area = re.search(r"(\d+(?:[\.,]\d+)?)\s*м²", meta_text, flags=re.IGNORECASE)
+            if m_area:
+                area_val = _to_float(m_area.group(1))
+                if area_val:
+                    data["area"] = area_val
+        if "rooms" not in data:
+            m_rooms = re.search(r"(\d+)\s*[-–]?\s*к\.?\s*кв", meta_text, flags=re.IGNORECASE)
+            if m_rooms:
+                rooms_val = _to_int(m_rooms.group(1))
+                if rooms_val is not None:
+                    data["rooms"] = rooms_val
+            elif re.search(r"студия", meta_text, flags=re.IGNORECASE):
+                data["rooms"] = 0
+        if "floor" not in data or "floors_total" not in data:
+            m_floor = re.search(r"(\d+)\s*/\s*(\d+)\s*эт", meta_text, flags=re.IGNORECASE)
+            if m_floor:
+                floor_val = _to_int(m_floor.group(1))
+                floors_total_val = _to_int(m_floor.group(2))
+                if floor_val is not None:
+                    data.setdefault("floor", floor_val)
+                if floors_total_val is not None:
+                    data.setdefault("floors_total", floors_total_val)
 
     # City from URL if not found
     if "city" not in data and url:
@@ -661,9 +795,18 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     except Exception:
         text = ""
 
+    # Merge images from meta-tags (if present) with scraped <img> list
+    meta_images = parsed_fields.get("images")
+    if isinstance(meta_images, list) and meta_images:
+        merged = meta_images + [img for img in images if img not in meta_images]
+        images = merged
+
     images = [img for img in images[:6] if isinstance(img, str)]
     text_limit = int(os.getenv("FETCH_TEXT_LIMIT", "4000"))
     text = text[:text_limit] if text else ""
+
+    if (not text or len(text) < 40) and parsed_fields.get("description"):
+        text = str(parsed_fields["description"])[:text_limit]
 
     if not text or len(text) < 40:
         fallback_msg = (
