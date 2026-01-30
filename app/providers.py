@@ -175,13 +175,20 @@ class CloudProvider(AIProvider):
                         "temperature": payload.get("temperature", self.temperature),
                     }
 
-                # Ensure outbound JSON is valid (no NaN/Inf, no exotic types)
-                # Also gives a clean error before network if something is wrong.
-                _strict_json_dumps(attempt)
+                # Ensure outbound JSON is valid (no NaN/Inf, no exotic types).
+                # httpx json=... uses allow_nan=True, поэтому сериализуем сами и шлём в content.
+                try:
+                    body = _strict_json_dumps(attempt)
+                except Exception as exc:
+                    raise RuntimeError(f"Payload is not valid JSON: {exc}") from exc
 
                 try:
                     async with httpx.AsyncClient(timeout=self.timeout, http2=True) as client:
-                        response = await client.post(final_url, json=attempt, headers=headers)
+                        response = await client.post(
+                            final_url,
+                            content=body.encode("utf-8"),
+                            headers=headers,
+                        )
                         response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
                     last_exc = exc
