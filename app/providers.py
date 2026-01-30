@@ -124,8 +124,13 @@ class CloudProvider(AIProvider):
             url_candidates.append(f"{base_url}/models/{inference}")
             url_candidates.append(f"{base_url}/chat/completions")
 
-        # Try primary model, then fallback models
-        models_to_try = [payload.get("model") or self.model]
+        # Try primary model, then fallback models to avoid schema issues on the proxy
+        primary_model = payload.get("model") or self.model
+        fallback_models = [self.model, "gpt-5", "gpt"]
+        models_to_try = []
+        for m in [primary_model] + fallback_models:
+            if m and m not in models_to_try:
+                models_to_try.append(m)
 
         last_exc: Optional[httpx.HTTPStatusError] = None
 
