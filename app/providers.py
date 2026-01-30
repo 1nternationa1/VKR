@@ -65,6 +65,17 @@ def _filter_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if k in allowed_keys and v not in (None, "", [])}
 
 
+def _trim_strings(data: Dict[str, Any], limit: int = 600) -> Dict[str, Any]:
+    """Limit string fields length to avoid huge prompts and upstream 400."""
+    out: Dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, str):
+            out[k] = v[:limit]
+        else:
+            out[k] = v
+    return out
+
+
 def _to_amvera_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
     Amvera /models/gpt expects: [{"role":"system|user|assistant","text":"..."}]
@@ -201,9 +212,13 @@ class CloudProvider(AIProvider):
         raise RuntimeError("Empty response from provider")
 
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
-        prompt = build_prompt(property_data)
-        filtered = _filter_property_data(property_data)
+        filtered = _trim_strings(_filter_property_data(property_data))
         prompt = build_prompt(filtered)
+
+        # Final safety: cap prompt size to avoid proxy 400 on oversized bodies
+        max_chars = int(os.getenv("PROMPT_CHAR_LIMIT", "6000"))
+        if len(prompt) > max_chars:
+            prompt = prompt[:max_chars]
 
         system_text = (
             "Ты аналитик недвижимости. Ответь строго валидным JSON по схеме: "
