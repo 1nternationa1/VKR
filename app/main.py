@@ -347,7 +347,7 @@ def _extract_listing_from_meta(raw_html: str) -> Dict[str, Any]:
 
 
 def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
-    """Lightweight extraction of key fields from listing HTML/JSON snippets."""
+    """Extract key fields from listing HTML using meta tags (Avito-saved pages)."""
     data: Dict[str, Any] = {}
 
     def _to_int(val: Any) -> Optional[int]:
@@ -372,7 +372,7 @@ def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
         except Exception:
             return None
 
-    # 1) Meta-tag driven extraction (robust for saved Avito HTML)
+    # Only meta-tag driven extraction (robust for saved Avito HTML)
     meta_fields = _extract_listing_from_meta(raw_html)
     for key, value in meta_fields.items():
         if key == "price":
@@ -384,68 +384,6 @@ def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
             data[key] = value
             continue
         data.setdefault(key, value)
-
-    def _search_num(pattern: str) -> Optional[float]:
-        m = re.search(pattern, raw_html, flags=re.IGNORECASE)
-        if m:
-            try:
-                return float(m.group(1))
-            except (ValueError, TypeError):
-                return None
-        return None
-
-    # Numbers (from embedded JSON)
-    price = _search_num(r'"price"\s*:\s*([0-9]{4,})')
-    area = _search_num(r'"area"\s*:\s*([0-9]+(?:\.[0-9]+)?)')
-    rooms = _search_num(r'"rooms(?:Count)?"\s*:\s*([0-9]+)')
-    floor = _search_num(r'"floor"\s*:\s*([0-9]+)')
-    floors_total = _search_num(r'"floorsTotal"\s*:\s*([0-9]+)')
-
-    if price and "price" not in data:
-        data["price"] = int(price)
-    if area and "area" not in data:
-        data["area"] = area
-    if rooms and "rooms" not in data:
-        data["rooms"] = int(rooms)
-    if floor and "floor" not in data:
-        data["floor"] = int(floor)
-    if floors_total and "floors_total" not in data:
-        data["floors_total"] = int(floors_total)
-
-    # Address / city / metro
-    addr_match = re.search(r'"address"\s*:\s*"([^"]+)"', raw_html)
-    if addr_match:
-        try:
-            addr_raw = addr_match.group(1).encode("utf-8").decode("unicode_escape")
-        except Exception:
-            addr_raw = addr_match.group(1)
-        data["address"] = addr_raw
-
-    city_match = re.search(r'"geoCityName"\s*:\s*"([^"]+)"', raw_html)
-    if city_match:
-        try:
-            city_raw = city_match.group(1).encode("utf-8").decode("unicode_escape")
-        except Exception:
-            city_raw = city_match.group(1)
-        data["city"] = city_raw
-
-    metros: List[str] = []
-    for m in re.finditer(r'"undergrounds"\s*:\s*\[\s*{[^}]*"name"\s*:\s*"([^"]+)"', raw_html):
-        try:
-            metro_raw = m.group(1).encode("utf-8").decode("unicode_escape")
-        except Exception:
-            metro_raw = m.group(1)
-        if metro_raw and metro_raw not in metros:
-            metros.append(metro_raw)
-    # Fallback: plain text like "Бульвар Рокоссовского 16-20 мин."
-    if not metros:
-        for m in re.finditer(r"([А-ЯЁ][А-Яа-яЁё\-\s]+?)\s*\d{1,2}\s*[–\-]?\s*мин", raw_html):
-            name = m.group(1).strip()
-            if len(name.split()) >= 1 and name not in metros:
-                metros.append(name)
-    if metros:
-        data["metro"] = metros[0]
-        data["metros"] = metros
 
     # Numbers from meta title/description like "1-к. квартира, 43 м², 5/9 эт."
     meta_text = " ".join(
