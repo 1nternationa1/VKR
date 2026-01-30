@@ -131,7 +131,8 @@ class CloudProvider(AIProvider):
             raise RuntimeError("Cloud provider is not configured. Set CLOUD_API_URL and CLOUD_API_KEY.")
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            # Amvera expects X-Auth-Token: Bearer <token>
+            "X-Auth-Token": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
