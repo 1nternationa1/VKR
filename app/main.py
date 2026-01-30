@@ -656,13 +656,23 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
         # Возвращаем мягкий ответ, чтобы UI мог продолжить работу без 502.
         return {"text": "", "images": [], "parsed": {}, "error": fallback_msg}
 
-    text = _html_to_text(raw_html)
-    if not text:
-        raise HTTPException(status_code=422, detail="Cannot extract text from the provided link")
+    try:
+        text = _html_to_text(raw_html)
+    except Exception:
+        text = ""
 
     images = [img for img in images[:6] if isinstance(img, str)]
     text_limit = int(os.getenv("FETCH_TEXT_LIMIT", "4000"))
-    return {"text": text[:text_limit], "images": images, "parsed": parsed_fields, "error": None}
+    text = text[:text_limit] if text else ""
+
+    if not text or len(text) < 40:
+        fallback_msg = (
+            "Не удалось надёжно извлечь текст объявления (возможно, защита от ботов или 429). "
+            "Скопируйте описание вручную и повторите."
+        )
+        return {"text": text, "images": images, "parsed": parsed_fields, "error": fallback_msg}
+
+    return {"text": text, "images": images, "parsed": parsed_fields, "error": None}
 
 
 @app.get("/history", response_class=HTMLResponse)
