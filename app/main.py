@@ -15,7 +15,14 @@ from fastapi.templating import Jinja2Templates
 import httpx
 
 from .db import fetch_history, fetch_history_item, init_db, log_history
-from .providers import AIProvider, CloudProvider, GeminiProvider, LocalStubProvider, get_provider
+from .providers import (
+    AIProvider,
+    CloudProvider,
+    GeminiProvider,
+    LocalStubProvider,
+    get_provider,
+    _filter_property_data,
+)
 from .schemas import AnalyzeRequest, CompareObject, CompareRequest, CompareResponse, ReportModel
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
@@ -512,8 +519,12 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
     report_text: str = ""
     price_meta: Dict[str, Any] = _estimate_price_position(property_data)
 
+    # Extra safety: drop лишние поля и длинные тексты до вызова провайдера,
+    # чтобы не получить 400 "Invalid JSON" из-за объёмного body.
+    safe_input = _trim_text_fields(_filter_property_data(property_data), limit=800)
+
     try:
-        raw_response = await provider.generate_report(property_data)
+        raw_response = await provider.generate_report(safe_input)
         report_text = (raw_response or "").strip()
         try:
             parsed_candidate = _parse_llm_json(raw_response)
