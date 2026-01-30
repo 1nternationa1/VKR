@@ -216,6 +216,9 @@ def _normalize_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
                 cleaned.pop(key, None)
         elif val is None:
             cleaned.pop(key, None)
+    # Trim verbose text fields to prevent "input too long" errors downstream.
+    max_len = int(os.getenv("MAX_TEXT_FIELD_LEN", "3000"))
+    cleaned = _trim_text_fields(cleaned, limit=max_len)
     return cleaned
 
 
@@ -246,6 +249,15 @@ def _html_to_text(content: str) -> str:
     content = html.unescape(content)
     content = re.sub(r"\s+", " ", content)
     return content.strip()
+
+
+def _trim_text_fields(data: Dict[str, Any], limit: int = 3000) -> Dict[str, Any]:
+    """Cap long free-text fields to avoid model/input limits."""
+    for key in ("description", "source_text", "notes"):
+        val = data.get(key)
+        if isinstance(val, str) and len(val) > limit:
+            data[key] = val[:limit]
+    return data
 
 
 def _extract_image_urls(html_content: str, base_url: str, limit: int = 6) -> List[str]:
@@ -649,7 +661,8 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
         raise HTTPException(status_code=422, detail="Cannot extract text from the provided link")
 
     images = [img for img in images[:6] if isinstance(img, str)]
-    return {"text": text[:6000], "images": images, "parsed": parsed_fields, "error": None}
+    text_limit = int(os.getenv("FETCH_TEXT_LIMIT", "4000"))
+    return {"text": text[:text_limit], "images": images, "parsed": parsed_fields, "error": None}
 
 
 @app.get("/history", response_class=HTMLResponse)

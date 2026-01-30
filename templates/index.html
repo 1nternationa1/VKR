@@ -389,6 +389,11 @@
         nextStep: document.getElementById("nextStep"),
       };
 
+      function limitText(text, limit = 3800) {
+        if (typeof text !== "string") return "";
+        return text.length > limit ? text.slice(0, limit) : text;
+      }
+
       function switchTab(tab) {
         state.activeTab = tab;
         elements.tabs.forEach(btn => btn.classList.toggle("active", btn.dataset.tab === tab));
@@ -513,7 +518,7 @@
             throw new Error(errMsg);
           }
           const data = await res.json();
-          const text = data.text || "";
+          const text = limitText(data.text || "");
           elements.adText.value = text;
           state.adText = text;
           state.images = data.images || [];
@@ -533,8 +538,9 @@
       async function pasteFromClipboard() {
         try {
           const text = await navigator.clipboard.readText();
-          elements.adText.value = text;
-          state.adText = text;
+          const trimmed = limitText(text);
+          elements.adText.value = trimmed;
+          state.adText = trimmed;
           setStatus("Вставлено из буфера.", "ok");
         } catch {
           setStatus("Клипборд недоступен.", "error");
