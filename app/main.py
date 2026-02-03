@@ -224,7 +224,7 @@ def _normalize_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
         elif val is None:
             cleaned.pop(key, None)
     # Trim verbose text fields to prevent "input too long" errors downstream.
-    max_len = int(os.getenv("MAX_TEXT_FIELD_LEN", "3000"))
+    max_len = int(os.getenv("MAX_TEXT_FIELD_LEN", "2000"))
     cleaned = _trim_text_fields(cleaned, limit=max_len)
     return cleaned
 

@@ -238,7 +238,7 @@ class CloudProvider(AIProvider):
         prompt = build_prompt(filtered)
 
         # Final safety: cap prompt size to avoid proxy 400 on oversized bodies
-        max_chars = int(os.getenv("PROMPT_CHAR_LIMIT", "6000"))
+        max_chars = int(os.getenv("PROMPT_CHAR_LIMIT", "4000"))
         if len(prompt) > max_chars:
             prompt = prompt[:max_chars]
 
