@@ -104,6 +104,22 @@ def _to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return out
 
 
+def _shrink_messages(messages: List[Dict[str, Any]], limit: int = 2000) -> List[Dict[str, Any]]:
+    """
+    Truncate long message texts to avoid oversized/invalid JSON bodies
+    even если апстрим прислал гигантское description.
+    """
+    trimmed: List[Dict[str, Any]] = []
+    for m in messages or []:
+        m_copy = dict(m)
+        if "text" in m_copy and isinstance(m_copy["text"], str):
+            m_copy["text"] = m_copy["text"][:limit]
+        if "content" in m_copy and isinstance(m_copy.get("content"), str):
+            m_copy["content"] = m_copy["content"][:limit]
+        trimmed.append(m_copy)
+    return trimmed
+
+
 # ---------------------------
 # Provider interface
 # ---------------------------
@@ -161,17 +177,18 @@ class CloudProvider(AIProvider):
         for final_url in url_candidates:
             for model_name in models_to_try:
                 # IMPORTANT: do not mutate the original payload across attempts
+                messages = _shrink_messages(payload.get("messages", []))
                 if "/models/" in final_url:
                     # Use minimal schema for Amvera models endpoint
                     attempt: Dict[str, Any] = {
                         "model": model_name,
-                        "messages": _to_amvera_messages(payload.get("messages", [])),
+                        "messages": _to_amvera_messages(messages),
                     }
                 else:
                     # OpenAI-compatible chat/completions schema
                     attempt = {
                         "model": model_name,
-                        "messages": _to_openai_messages(payload.get("messages", [])),
+                        "messages": _to_openai_messages(messages),
                         "temperature": payload.get("temperature", self.temperature),
                     }
 
