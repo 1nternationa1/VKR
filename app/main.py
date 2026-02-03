@@ -385,6 +385,14 @@ def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
             continue
         data.setdefault(key, value)
 
+    # Fallback: price from visible text if meta price missing
+    if "price" not in data:
+        m_price = re.search(r"([0-9][0-9\s]{3,})\s*(?:₽|руб)", raw_html, flags=re.IGNORECASE)
+        if m_price:
+            num = _to_int(m_price.group(1))
+            if num:
+                data["price"] = num
+
     # Numbers from meta title/description like "1-к. квартира, 43 м², 5/9 эт."
     meta_text = " ".join(
         str(x)
