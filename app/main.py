@@ -518,6 +518,51 @@ def _extract_structured_listing(raw_html: str, url: str) -> Dict[str, Any]:
     return data
 
 
+def _extract_address_metro_from_text(text: str) -> Dict[str, Any]:
+    """
+    Best-effort парсинг адреса и метро из plain-text объявления.
+    Ищем паттерны вида "Москва, ул. Сергея Эйзенштейна, 6" и "Ботанический сад 16–20 мин."
+    """
+    if not text:
+        return {}
+    out: Dict[str, Any] = {}
+
+    # Адрес: город + улица + дом
+    addr_regex = re.compile(
+        r"(?:г\.\s*)?([А-ЯЁ][а-яёA-Za-z\-\\s]+),\s*"
+        r"(ул\.|улица|проспект|пр-кт|шоссе|ш\.|пер\.|переулок|бульвар|бул\.|пл\.|площадь|набережная|наб\.)\s*"
+        r"([^,\n]+?)\s*,\s*(\d+[А-Яа-я0-9\/\-]*)",
+        re.IGNORECASE,
+    )
+    m_addr = addr_regex.search(text)
+    if m_addr:
+        city = m_addr.group(1).strip()
+        street_type = m_addr.group(2).strip()
+        street = m_addr.group(3).strip()
+        house = m_addr.group(4).strip()
+        out["city"] = city
+        out["address"] = f"{city}, {street_type} {street}, {house}".strip()
+
+    # Метро и время пешком
+    metro_regex = re.compile(r"([А-ЯЁA-Za-z0-9\-\s\.]+?)\s+(\d+)[–-](\d+)\s*мин", re.IGNORECASE)
+    metro_matches = metro_regex.findall(text)
+    if metro_matches:
+        metro_list = []
+        for name, t_min, t_max in metro_matches:
+            metro_list.append(
+                {"name": name.strip(), "time_min": int(t_min), "time_max": int(t_max)}
+            )
+        # Берём ближайшее
+        metro_sorted = sorted(metro_list, key=lambda x: x["time_min"])
+        best = metro_sorted[0]
+        out.setdefault("metro", best["name"])
+        out.setdefault("metro_time_min", best["time_min"])
+        out.setdefault("metro_time_max", best["time_max"])
+        out["metro_list"] = metro_sorted
+
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("index.html", {"request": request})
@@ -935,6 +980,14 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
 
     if (not text or len(text) < 40) and parsed_fields.get("description"):
         text = str(parsed_fields["description"])[:text_limit]
+
+    # Дополнительный разбор адреса/метро из текста
+    try:
+        addr_meta = _extract_address_metro_from_text(text)
+        for k, v in (addr_meta or {}).items():
+            parsed_fields.setdefault(k, v)
+    except Exception:
+        pass
 
     if not text or len(text) < 40:
         fallback_msg = (
