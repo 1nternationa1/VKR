@@ -772,10 +772,14 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        # Мобильный UA часто проходит защиту Avito
+        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36",
     ]
     headers = {
         "User-Agent": random.choice(user_agents),
-        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.6",
+        "Accept-Language": random.choice(
+            ["ru-RU,ru;q=0.9,en;q=0.6", "ru, en;q=0.8", "ru-RU,ru;q=0.95,en-US;q=0.5"]
+        ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Referer": "https://www.avito.ru/",
     }
@@ -789,6 +793,21 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     async def _fetch_via_jina(target: str) -> str:
         proxy_url = f"https://r.jina.ai/{target}"
         async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            response = await client.get(proxy_url, follow_redirects=True)
+            response.raise_for_status()
+            return response.text
+
+    async def _fetch_via_jina_mobile(target: str) -> str:
+        mobile = target.replace("https://www.avito.ru", "https://m.avito.ru").replace("http://", "https://")
+        proxy_url = f"https://r.jina.ai/{mobile}"
+        async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+            response = await client.get(proxy_url, follow_redirects=True)
+            response.raise_for_status()
+            return response.text
+
+    async def _fetch_via_jina_double(target: str) -> str:
+        proxy_url = f"https://r.jina.ai/https://r.jina.ai/{target}"
+        async with httpx.AsyncClient(timeout=18.0, headers=headers) as client:
             response = await client.get(proxy_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
@@ -853,7 +872,14 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     # Try proxy first (лучше для заблокированных RU сайтов), затем прямой доступ.
     images: List[str] = []
     parsed_fields: Dict[str, Any] = {}
-    fetch_chain = (_fetch_via_jina, _fetch_via_textise, _fetch_direct, _fetch_via_playwright)
+    fetch_chain = (
+        _fetch_via_jina_mobile,  # мобильная версия Авито
+        _fetch_via_jina,         # обычный r.jina.ai
+        _fetch_via_jina_double,  # двойной прокси
+        _fetch_via_textise,
+        _fetch_direct,
+        _fetch_via_playwright,
+    )
     for fetcher in fetch_chain:
         try:
             raw_html = await fetcher(url)
@@ -873,12 +899,15 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
 
             break
         except httpx.HTTPStatusError as exc:
-            errors.append(f"{exc.response.status_code}: {exc.response.text[:200]}")
+            body = exc.response.text[:200] if exc.response is not None else str(exc)
+            if exc.response is not None and exc.response.status_code in (403, 429):
+                body = f"{exc.response.status_code}: Avito вернул защиту (403/429). Скопируйте текст объявления вручную или сохраните страницу и загрузите её."
+            errors.append(body)
         except httpx.RequestError as exc:
             errors.append(str(exc))
         except ValueError as exc:
             errors.append(str(exc))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.8)
 
     if not raw_html:
         logger.warning("fetch_listing failed for %s: %s", url, "; ".join(errors))
