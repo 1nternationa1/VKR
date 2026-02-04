@@ -140,119 +140,176 @@ class CloudProvider(AIProvider):
         self.api_key = os.getenv("CLOUD_API_KEY")
         self.model = os.getenv("CLOUD_MODEL", "gpt-5")
         self.timeout = float(os.getenv("CLOUD_TIMEOUT", "60"))
-        self.temperature = float(os.getenv("CLOUD_TEMPERATURE", "0.2"))
+        # temp по умолчанию 1.0 для совместимости с /models/gpt Amvera (иначе 400)
+        self.temperature = float(os.getenv("CLOUD_TEMPERATURE", "1"))
+        self.proxies = {
+            "http://": os.getenv("CLOUD_HTTP_PROXY") or os.getenv("HTTP_PROXY") or None,
+            "https://": os.getenv("CLOUD_HTTPS_PROXY") or os.getenv("HTTPS_PROXY") or None,
+        }
+        if not any(self.proxies.values()):
+            self.proxies = None
+        self.verify_ssl = os.getenv("CLOUD_VERIFY_SSL", "true").lower() not in ("0", "false", "no")
+        self.httpx_timeout = httpx.Timeout(
+            timeout=self.timeout,
+            connect=min(self.timeout, 10.0),
+            read=self.timeout,
+            write=min(self.timeout, 15.0),
+            pool=min(self.timeout, 15.0),
+        )
+        # http/2 опционален; по умолчанию выключен для совместимости с прокси Amvera
+        self.use_http2 = os.getenv("HTTP2", "false").lower() in ("1", "true", "yes")
+
+    def _build_headers(self) -> Dict[str, str]:
+        if not self.api_key:
+            raise RuntimeError("Cloud provider is not configured. Set CLOUD_API_URL and CLOUD_API_KEY.")
+        bearer = self.api_key if str(self.api_key).startswith("Bearer ") else f"Bearer {self.api_key}"
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Auth-Token": bearer,
+            # Отдаём и стандартный Authorization для совместимости с OpenAI-совместимыми шлюзами
+            "Authorization": bearer,
+        }
+
+    def _candidate_urls(self) -> List[str]:
+        """
+        Возвращает список URL, которые нужно попробовать:
+        1) Amvera /models/gpt (родной формат role/text)
+        2) OpenAI-совместимый /chat/completions (на случай обратного прокси)
+        3) Если указан полный путь (уже содержит /models/ или /chat/completions) — используем только его.
+        """
+        base = (self.api_url or "").rstrip("/")
+        if "/models/" in base or "/chat/completions" in base:
+            return [base]
+        return [f"{base}/models/gpt", f"{base}/chat/completions"]
+
+    def _prepare_payload(self, url: str, messages: List[Dict[str, Any]], model: str, temperature: float) -> Dict[str, Any]:
+        trimmed = _shrink_messages(messages)
+        if "/models/" in url and "chat/completions" not in url:
+            attempt = {
+                "model": model,
+                "messages": _to_amvera_messages(trimmed),
+            }
+            # Amvera /models/gpt принимает только default temperature=1; чтобы не ловить 400, не передаём иной temp
+            if temperature and abs(float(temperature) - 1.0) > 1e-6:
+                pass
+            else:
+                attempt["temperature"] = 1
+            return attempt
+        return {
+            "model": model,
+            "messages": _to_openai_messages(trimmed),
+            "temperature": temperature,
+        }
+
+    @staticmethod
+    def _parse_response(resp: httpx.Response) -> str:
+        try:
+            body = resp.json()
+        except Exception:
+            return resp.text
+
+        if isinstance(body, dict):
+            choices = body.get("choices")
+            if isinstance(choices, list) and choices:
+                msg = choices[0].get("message") or choices[0].get("delta") or {}
+                if isinstance(msg, dict):
+                    if msg.get("text"):
+                        return str(msg["text"])
+                    if msg.get("content"):
+                        return str(msg["content"])
+                elif isinstance(msg, str):
+                    return msg
+            # прямой формат {"message":{"text": "..."}}
+            msg = body.get("message")
+            if isinstance(msg, dict):
+                if msg.get("text"):
+                    return str(msg["text"])
+                if msg.get("content"):
+                    return str(msg["content"])
+            for key in ("text", "content"):
+                if key in body and body[key]:
+                    return str(body[key])
+
+        return json.dumps(body, ensure_ascii=False)
 
     async def _chat(self, payload: Dict[str, Any]) -> str:
         if not self.api_url or not self.api_key:
             raise RuntimeError("Cloud provider is not configured. Set CLOUD_API_URL and CLOUD_API_KEY.")
 
-        headers = {
-            # Amvera expects X-Auth-Token: Bearer <token>
-            "X-Auth-Token": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        base_url = self.api_url.rstrip("/")
-        url_candidates: List[str] = []
-
-        # If user already provided a full endpoint, respect it.
-        if "/models/" in base_url or "/chat/completions" in base_url:
-            url_candidates.append(base_url)
-        else:
-            # Prefer Amvera documented path first; then OpenAI-compatible fallback if enabled upstream.
-            inference = "gpt" if (payload.get("model") or self.model).startswith("gpt-") else "llama"
-            url_candidates.append(f"{base_url}/models/{inference}")
-            url_candidates.append(f"{base_url}/chat/completions")
-
-        # Try primary model, then fallback models to avoid schema issues on the proxy
-        primary_model = payload.get("model") or self.model
-        fallback_models = [self.model, "gpt-5", "gpt"]
-        models_to_try = []
-        for m in [primary_model] + fallback_models:
+        headers = self._build_headers()
+        models_primary = payload.get("model") or self.model
+        models_to_try: List[str] = []
+        for m in [models_primary, self.model, "gpt-5", "gpt"]:
             if m and m not in models_to_try:
                 models_to_try.append(m)
 
-        last_exc: Optional[httpx.HTTPStatusError] = None
-
-        for final_url in url_candidates:
+        errors: List[str] = []
+        for final_url in self._candidate_urls():
             for model_name in models_to_try:
-                # IMPORTANT: do not mutate the original payload across attempts
-                messages = _shrink_messages(payload.get("messages", []))
-                if "/models/" in final_url:
-                    # Use minimal schema for Amvera models endpoint
-                    attempt: Dict[str, Any] = {
-                        "model": model_name,
-                        "messages": _to_amvera_messages(messages),
-                    }
-                else:
-                    # OpenAI-compatible chat/completions schema
-                    attempt = {
-                        "model": model_name,
-                        "messages": _to_openai_messages(messages),
-                        "temperature": payload.get("temperature", self.temperature),
-                    }
-
-                # Ensure outbound JSON is valid (no NaN/Inf, no exotic types).
-                # httpx json=... uses allow_nan=True, поэтому сериализуем сами и шлём в content.
+                attempt = self._prepare_payload(
+                    final_url,
+                    payload.get("messages", []),
+                    model_name,
+                    payload.get("temperature", self.temperature),
+                )
                 try:
-                    body = _strict_json_dumps(attempt)
-                except Exception as exc:
-                    raise RuntimeError(f"Payload is not valid JSON: {exc}") from exc
-
-                try:
-                    async with httpx.AsyncClient(timeout=self.timeout, http2=True) as client:
-                        response = await client.post(
-                            final_url,
-                            content=body.encode("utf-8"),
-                            headers=headers,
-                        )
-                        response.raise_for_status()
+                    async with httpx.AsyncClient(
+                        timeout=self.httpx_timeout,
+                        http2=self.use_http2,
+                        proxies=self.proxies,
+                        verify=self.verify_ssl,
+                    ) as client:
+                        response = await client.post(final_url, json=attempt, headers=headers)
+                    response.raise_for_status()
+                    return self._parse_response(response)
                 except httpx.HTTPStatusError as exc:
-                    last_exc = exc
-                    text = (exc.response.text or "").lower()
-
-                    # If endpoint/model is missing or schema rejected, try next candidate.
-                    if (
-                        exc.response.status_code in (400, 403, 404)
-                        or "not found" in text
-                        or "unknown" in text
-                        or "invalid json" in text
-                        or "schema" in text
-                        or "validation" in text
-                    ):
+                    err_text = exc.response.text[:200] if exc.response else str(exc)
+                    errors.append(f"{final_url} [{model_name}]: {exc.response.status_code} {err_text}")
+                    # Если модель или эндпоинт не подходят — пробуем следующий
+                    if exc.response is not None and exc.response.status_code in (400, 403, 404, 422):
                         continue
-
-                    raise RuntimeError(f"LLM HTTP error: {exc.response.status_code} {exc.response.text}") from exc
+                    raise RuntimeError(f"LLM HTTP error: {err_text}") from exc
                 except httpx.RequestError as exc:
-                    raise RuntimeError(f"LLM request failed: {exc}") from exc
+                    errors.append(f"{final_url} [{model_name}]: {type(exc).__name__} {exc}")
+                    continue
 
-                # Parse response
-                body = response.json()
-
-                raw_content: Any = None
-                if isinstance(body, dict):
-                    # OpenAI-like
-                    raw_content = body.get("choices", [{}])[0].get("message", {}).get("content")
-                    # Amvera-like
-                    if not raw_content:
-                        raw_content = body.get("message", {}).get("text")
-
-                if not raw_content:
-                    raw_content = json.dumps(body, ensure_ascii=False)
-
-                if isinstance(raw_content, (dict, list)):
-                    raw_content = json.dumps(raw_content, ensure_ascii=False)
-
-                if raw_content:
-                    return str(raw_content)
-
-        if last_exc:
-            raise RuntimeError(f"LLM HTTP error: {last_exc.response.status_code} {last_exc.response.text}") from last_exc
-        raise RuntimeError("Empty response from provider")
+        raise RuntimeError(f"LLM request failed: {'; '.join(errors[:3])}")
 
     async def generate_report(self, property_data: Dict[str, Any]) -> str:
+        # Если цена не дошла в распарсенных полях (из-за 429 на fetch_listing), попробуем достать её из description.
+        def _extract_price_from_text(txt: str) -> Optional[float]:
+            if not txt:
+                return None
+            import re
+            candidates = []
+            for m in re.finditer(r"(\d[\d\s]{4,})\s*₽?", txt):
+                try:
+                    candidates.append(float(m.group(1).replace(" ", "")))
+                except Exception:
+                    continue
+            return max(candidates) if candidates else None
+
+        if not property_data.get("price"):
+            maybe_price = _extract_price_from_text(property_data.get("description", "")) or _extract_price_from_text(
+                property_data.get("source_text", "")
+            )
+            if maybe_price:
+                property_data = dict(property_data)
+                property_data["price"] = maybe_price
+
         filtered = _trim_strings(_filter_property_data(property_data))
-        prompt = build_prompt(filtered)
+        # Человеческое описание + явный JSON с распознанными полями,
+        # чтобы модель гарантированно увидела цену/метраж даже при обрезке текста.
+        prompt_human = build_prompt(filtered)
+        prompt_json = _strict_json_dumps(filtered)
+        fallback_text_parts = []
+        for key in ("source_text", "description"):
+            val = property_data.get(key)
+            if isinstance(val, str) and val.strip():
+                fallback_text_parts.append(f"{key}:\n{val[:1500]}")
+        fallback_block = ("\n\nСырые тексты:\n" + "\n---\n".join(fallback_text_parts)) if fallback_text_parts else ""
+        prompt = f"{prompt_human}\n\nДанные JSON:\n{prompt_json}{fallback_block}"
 
         # Final safety: cap prompt size to avoid proxy 400 on oversized bodies
         max_chars = int(os.getenv("PROMPT_CHAR_LIMIT", "4000"))
@@ -289,7 +346,50 @@ class CloudProvider(AIProvider):
             "messages": messages,
         }
 
-        return await self._chat(payload)
+        raw = await self._chat(payload)
+
+        # Пост-обработка: если модель вернула JSON, принудительно проставляем цену и приводим к схеме.
+        try:
+            data = json.loads(raw)
+            if isinstance(data, str):
+                data = json.loads(data)
+            if isinstance(data, dict):
+                price = filtered.get("price")
+                try:
+                    price_val = float(price) if price is not None else None
+                except Exception:
+                    price_val = None
+
+                # price_range
+                pr = data.get("price_range") or {}
+                if price_val is not None:
+                    pr = {"min_value": price_val, "max_value": price_val, "currency": "RUB"}
+                else:
+                    pr = {
+                        "min_value": pr.get("min_value", 0) if isinstance(pr, dict) else 0,
+                        "max_value": pr.get("max_value", 0) if isinstance(pr, dict) else 0,
+                        "currency": "RUB",
+                    }
+
+                # поля строки <=200
+                def _clip(v):
+                    return v[:200] if isinstance(v, str) else v
+
+                data = {
+                    "summary": _clip(data.get("summary", "")),
+                    "recommendation": _clip(data.get("recommendation", "")),
+                    "risk_score": float(data.get("risk_score", 0) or 0),
+                    "price_range": pr,
+                    "pros": [_clip(x) for x in (data.get("pros") or [])][:4],
+                    "cons": [_clip(x) for x in (data.get("cons") or [])][:4],
+                    "checks": [_clip(x) for x in (data.get("checks") or [])][:4],
+                }
+
+                return json.dumps(_sanitize_jsonable(data), ensure_ascii=False, allow_nan=False)
+        except Exception:
+            pass  # если не json, отдадим как есть
+
+        return raw
 
     async def generate_comparison(self, objects: List[Dict[str, Any]]) -> str:
         # objects may contain non-serializable types or NaN; sanitize first
