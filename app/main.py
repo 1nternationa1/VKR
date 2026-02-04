@@ -190,6 +190,82 @@ def _estimate_price_position(property_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+DOC_CHECKLIST = [
+    "Выписка из ЕГРН (права, обременения, история переходов). Заказать самостоятельно через Госуслуги/МФЦ.",
+    "Правоустанавливающий документ (ДКП/дарение/наследство/приватизация) — продавец в нём совпадает с ЕГРН.",
+    "Согласие супруга/совладельцев; нотариальные доверенности — проверить срок и полномочия.",
+    "Справка о зарегистрированных (форма №9/Выписка о прописанных) — отсутствие несовершеннолетних и недееспособных.",
+    "Технический паспорт/БТИ и фактическая планировка без самовольных перепланировок.",
+    "Справка об отсутствии долгов по ЖКУ, капремонту, электроэнергии; акт сверки при передаче.",
+    "Если ипотека/залоги — согласие банка, закладная; расчёты только через эскроу/аккредитив.",
+]
+
+TECH_CHECKLIST = [
+    "Осмотр инженерии: стояки, запорная арматура, отсутствие протечек и запахов в санузлах.",
+    "Электрика: щиток, сечение кабеля, состояние розеток, УЗО/автоматы.",
+    "Окна/балкон: герметичность, отсутствие конденсата и продуваний.",
+    "Шум и вибрации: лифт, мусоропровод, дороги/бар/трамвай рядом.",
+    "Доступность: лифт для колясок/грузовой, ширина коридоров, парковка во дворе.",
+    "Тепло/вентиляция: температура в квартире, тяга в вытяжках.",
+]
+
+AREA_CHECKLIST = [
+    "Транспорт: время до метро/МЦД/остановок, пробки в час пик.",
+    "Инфраструктура: школа/сад/поликлиника/магазины в 10–15 мин пешком.",
+    "Экология и шум: магистрали, ЖД/аэропорт, промзоны, свалки.",
+    "Двор: благоустройство, освещение, парковка, безопасность (камеры/консьерж).",
+    "Дом: год постройки, материал, капремонт/реновация, состояние подъезда и кровли.",
+]
+
+
+def _build_extended_insights(property_data: Dict[str, Any], price_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Сформировать расширенные подсказки: юрпроверка, техосмотр, район, шаги сделки, комментарий рынка.
+    """
+    steps = [
+        "Соберите пакет документов от продавца и закажите независимую выписку ЕГРН.",
+        "Проверьте историю объекта, перепланировки и долги, при необходимости — юрист/техэксперт.",
+        "Зафиксируйте цену и состояние в предварительном договоре/авансе, используйте безопасные расчёты (аккредитив/эскроу).",
+        "Подготовьте ДКП/Ипотечные документы, подпишите у нотариуса при долях/опеке/доверенности.",
+        "Передайте квартиру по акту с фиксацией показаний счётчиков и состояния, подайте на регистрацию в Росреестр.",
+    ]
+
+    market_note_parts: list[str] = []
+    if price_meta:
+        ppm = price_meta.get("price_per_m2")
+        base = price_meta.get("baseline_per_m2")
+        delta = price_meta.get("delta_percent")
+        city = price_meta.get("city")
+        if ppm and base and delta is not None:
+            trend = "ниже среднего" if delta < -5 else "в рынке" if abs(delta) <= 5 else "выше среднего"
+            market_note_parts.append(
+                f"Цена за м² ≈ {ppm:,.0f} ₽ против медианы города {base:,.0f} ₽ ({delta:+.1f}%, {trend})."
+            )
+        if city:
+            market_note_parts.append(f"Локация: {city}.")
+
+    if property_data.get("year"):
+        year = int(property_data["year"])
+        if year >= 2015:
+            market_note_parts.append("Дом свежий (2015+), ниже риски капитального ремонта.")
+        elif year < 1975:
+            market_note_parts.append("Старый фонд — проверьте капремонт, коммуникации и перекрытия.")
+
+    if property_data.get("floor") and property_data.get("floors_total"):
+        floor = property_data["floor"]
+        total = property_data["floors_total"]
+        if floor in (1, total):
+            market_note_parts.append("1-й/последний этаж — учтите тепло/шум/протечки и торгуйтесь.")
+
+    return {
+        "documents": DOC_CHECKLIST,
+        "tech": TECH_CHECKLIST,
+        "area": AREA_CHECKLIST,
+        "steps": steps,
+        "market_note": " ".join(market_note_parts) or None,
+    }
+
+
 def _normalize_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
     """Best-effort cleanup for incoming property data to avoid validation errors."""
     cleaned = dict(data or {})
@@ -464,6 +540,7 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
     parsed_report: Optional[Dict[str, Any]] = None
     report_text: str = ""
     price_meta: Dict[str, Any] = _estimate_price_position(property_data)
+    insights = _build_extended_insights(property_data, price_meta)
 
     # Extra safety: drop лишние поля и длинные тексты до вызова провайдера,
     # чтобы не получить 400 "Invalid JSON" из-за объёмного body.
@@ -495,7 +572,13 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
 
     log_history(property_data, parsed_report or report_text, raw_response, mode=os.getenv("AI_MODE", "cloud"))
 
-    return {"report": parsed_report, "report_text": report_text, "raw": raw_response, "price_meta": price_meta}
+    return {
+        "report": parsed_report,
+        "report_text": report_text,
+        "raw": raw_response,
+        "price_meta": price_meta,
+        "insights": insights,
+    }
 
 
 def _score_object(obj: CompareObject) -> float:
@@ -640,7 +723,13 @@ async def analyze(
         }
         return templates.TemplateResponse("index.html", context)
 
-    return {"report": result["report"], "report_text": result["report_text"], "raw_response": result["raw"]}
+    return {
+        "report": result["report"],
+        "report_text": result["report_text"],
+        "raw_response": result["raw"],
+        "price_meta": result.get("price_meta"),
+        "insights": result.get("insights"),
+    }
 
 
 @app.post("/api/analyze", response_model=CompareResponse)
@@ -712,29 +801,82 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
             response.raise_for_status()
             return response.text
 
+    async def _fetch_via_playwright(target: str) -> Optional[str]:
+        """
+        Последняя попытка: открыть страницу реальным браузером и нажать «Продолжить»
+        на капче Avito. Работает только если playwright установлен и доступен Chromium.
+        Не бросает исключения, чтобы основная цепочка не падала при отсутствии браузера.
+        """
+        try:
+            from playwright.async_api import async_playwright  # type: ignore
+        except Exception:
+            return None
+
+        browser = None
+        page = None
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent=headers["User-Agent"],
+                    locale="ru-RU",
+                    viewport={"width": 1280, "height": 720},
+                )
+                page = await context.new_page()
+                await page.goto(target, wait_until="networkidle", timeout=20000)
+
+                # Если показана капча Avito, там есть кнопка «Продолжить».
+                try:
+                    await page.get_by_text("Продолжить").click(timeout=3000)
+                    await page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+
+                content = await page.content()
+                return content
+        except Exception:
+            return None
+        finally:
+            try:
+                if page:
+                    await page.close()
+            except Exception:
+                pass
+            try:
+                if browser:
+                    await browser.close()
+            except Exception:
+                pass
+
     raw_html: Optional[str] = None
     errors: list[str] = []
     # Try proxy first (лучше для заблокированных RU сайтов), затем прямой доступ.
     images: List[str] = []
     parsed_fields: Dict[str, Any] = {}
-    fetch_chain = (_fetch_via_jina, _fetch_via_textise, _fetch_direct)
+    fetch_chain = (_fetch_via_jina, _fetch_via_textise, _fetch_direct, _fetch_via_playwright)
     for fetcher in fetch_chain:
         try:
             raw_html = await fetcher(url)
-            if raw_html and not images:
+            if not raw_html:
+                raise ValueError("empty body")
+
+            if not images:
                 try:
                     images = _extract_image_urls(raw_html, url)
                 except Exception:
                     images = []
-            if raw_html and not parsed_fields:
+            if not parsed_fields:
                 try:
                     parsed_fields = _extract_structured_listing(raw_html, url)
                 except Exception:
                     parsed_fields = {}
+
             break
         except httpx.HTTPStatusError as exc:
             errors.append(f"{exc.response.status_code}: {exc.response.text[:200]}")
         except httpx.RequestError as exc:
+            errors.append(str(exc))
+        except ValueError as exc:
             errors.append(str(exc))
         await asyncio.sleep(0.5)
 

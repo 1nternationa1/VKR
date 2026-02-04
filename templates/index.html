@@ -200,6 +200,19 @@
       margin-right: 6px;
       margin-bottom: 4px;
     }
+    .two-cols {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 10px;
+    }
+    .note-box {
+      background: #f7fafe;
+      border: 1px solid #e1e9f5;
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: #1f2937;
+      font-weight: 600;
+    }
     @media (max-width: 960px) {
       .layout { grid-template-columns: 1fr; }
     }
@@ -309,6 +322,11 @@
         </div>
 
         <div class="card-section">
+          <div style="font-weight:700;">Маркет-комментарий</div>
+          <div id="marketNote" class="note-box" style="margin-top:6px;">—</div>
+        </div>
+
+        <div class="card-section">
           <div style="font-weight:700;">Риски</div>
           <div class="risk-bar">
             <div class="risk-fill" id="riskFill"></div>
@@ -330,6 +348,28 @@
         <div class="card-section">
           <div style="font-weight:700;">Что проверить перед сделкой:</div>
           <ul id="checksList"></ul>
+        </div>
+
+        <div class="card-section two-cols">
+          <div>
+            <div style="font-weight:700;">Юрпроверка (чек-лист)</div>
+            <ul id="docList"></ul>
+          </div>
+          <div>
+            <div style="font-weight:700;">Осмотр и техника</div>
+            <ul id="techList"></ul>
+          </div>
+        </div>
+
+        <div class="card-section two-cols">
+          <div>
+            <div style="font-weight:700;">Район и инфраструктура</div>
+            <ul id="areaList"></ul>
+          </div>
+          <div>
+            <div style="font-weight:700;">Шаги сделки</div>
+            <ol id="stepsList" style="padding-left:18px; margin:6px 0;"></ol>
+          </div>
         </div>
 
         <div class="card-section">
@@ -387,6 +427,42 @@
         consList: document.getElementById("consList"),
         checksList: document.getElementById("checksList"),
         nextStep: document.getElementById("nextStep"),
+        docList: document.getElementById("docList"),
+        techList: document.getElementById("techList"),
+        areaList: document.getElementById("areaList"),
+        stepsList: document.getElementById("stepsList"),
+        marketNote: document.getElementById("marketNote"),
+      };
+
+      const defaults = {
+        documents: [
+          "Выписка ЕГРН: права, обременения, история переходов.",
+          "Правоустанавливающий документ совпадает с продавцом.",
+          "Согласие супруга/совладельцев; доверенности и их срок.",
+          "Справка о зарегистрированных (нет детей/недееспособных).",
+          "Планировка соответствует БТИ, нет самостроя.",
+          "Нет долгов по ЖКУ/капремонту; расчёт через эскроу/аккредитив.",
+        ],
+        tech: [
+          "Осмотрите стояки, сантехнику, отсутствие протечек/запахов.",
+          "Электрика: щиток, автоматы/УЗО, розетки, сечение кабеля.",
+          "Окна/балкон: герметичность, нет конденсата и продувания.",
+          "Шум: мусоропровод/лифты/дороги — послушать вечером.",
+          "Тепло и вентиляция: температура, тяга в санузлах.",
+        ],
+        area: [
+          "Время до метро/МЦД/остановок и пробки в час пик.",
+          "Школа/сад/поликлиника/магазины в 10–15 мин пешком.",
+          "Шум/экология: магистрали, ЖД, промзоны, свалки.",
+          "Благоустройство двора, парковка, безопасность/камеры.",
+        ],
+        steps: [
+          "Заказать ЕГРН и собрать документы продавца.",
+          "Проверить историю, перепланировки и долги; при необходимости — юрист/техэксперт.",
+          "Закрепить цену и состояние авансом; расчёт через аккредитив/эскроу.",
+          "Подготовить и подписать ДКП (доли/опека — у нотариуса).",
+          "Передать по акту с показаниями счётчиков, подать на регистрацию.",
+        ],
       };
 
       function limitText(text, limit = 3800) {
@@ -655,6 +731,19 @@
         fillList(elements.prosList, pros);
         fillList(elements.consList, cons);
         fillList(elements.checksList, checks);
+
+        const insights = data.insights || {};
+        fillList(elements.docList, insights.documents && insights.documents.length ? insights.documents : defaults.documents);
+        fillList(elements.techList, insights.tech && insights.tech.length ? insights.tech : defaults.tech);
+        fillList(elements.areaList, insights.area && insights.area.length ? insights.area : defaults.area);
+        fillList(elements.stepsList, insights.steps && insights.steps.length ? insights.steps : defaults.steps);
+
+        const marketNote =
+          insights.market_note ||
+          (priceMeta.price_per_m2
+            ? `Цена ~${priceMeta.price_per_m2.toLocaleString()} ₽/м², город ${priceMeta.city || "—"}; отклонение ${priceMeta.delta_percent || 0}% от медианы ${priceMeta.baseline_per_m2?.toLocaleString?.() || "—"} ₽/м².`
+            : "Добавьте цену и площадь, чтобы сравнить с рынком.");
+        elements.marketNote.textContent = marketNote;
 
         elements.nextStep.textContent = report.recommendation
           ? `Следующий шаг: ${report.recommendation}`
