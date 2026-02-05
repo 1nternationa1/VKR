@@ -190,6 +190,128 @@ def _estimate_price_position(property_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _has_any(text: str, keywords: list[str]) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(kw in lower for kw in keywords)
+
+
+def _compute_risk(property_data: Dict[str, Any], price_meta: Dict[str, Any]) -> tuple[float, list[str]]:
+    """
+    Эвристический риск (0-1) + причины. Покрывает отсутствие данных, год/этаж, цену vs рынок,
+    шум/промзону, обременения в тексте, перепланировку и состояние.
+    """
+    score = 0.05
+    reasons: list[str] = []
+
+    desc = "\n".join(
+        str(x)
+        for x in (
+            property_data.get("description"),
+            property_data.get("notes"),
+            property_data.get("source_text"),
+        )
+        if x
+    )
+
+    # Полнота
+    if not property_data.get("price"):
+        score += 0.07
+        reasons.append("Нет цены")
+    if not property_data.get("area"):
+        score += 0.05
+        reasons.append("Нет площади")
+    if not property_data.get("year"):
+        score += 0.04
+        reasons.append("Нет года постройки")
+    if not (property_data.get("address") or property_data.get("location")):
+        score += 0.05
+        reasons.append("Нет адреса/локации")
+
+    # Год и этаж
+    year = property_data.get("year")
+    if year:
+        year = int(year)
+        if year <= 1975:
+            score += 0.15
+            reasons.append(f"Дом {year} (старый фонд)")
+        elif year <= 1990:
+            score += 0.08
+            reasons.append(f"Дом {year} (старше 1990)")
+        elif year <= 2010:
+            score += 0.04
+        elif year > 2015:
+            score -= 0.05
+
+    floor = property_data.get("floor")
+    floors_total = property_data.get("floors_total")
+    if floor and floors_total and floor in (1, floors_total):
+        score += 0.05
+        reasons.append("1-й/последний этаж")
+
+    # Материал (если придёт из парсера)
+    material = (property_data.get("material") or "").lower()
+    if material in ("панель", "дерево"):
+        score += 0.05
+        reasons.append(f"Материал: {material}")
+
+    # Цена vs рынок
+    delta = price_meta.get("delta_percent")
+    if delta is not None:
+        try:
+            delta_f = float(delta)
+            if delta_f < -15:
+                score += 0.12
+                reasons.append(f"Цена {delta_f:.0f}% ниже рынка")
+            elif abs(delta_f) <= 15:
+                score -= 0.02
+            elif delta_f > 25:
+                score += 0.04
+                reasons.append(f"Цена {delta_f:.0f}% выше рынка")
+        except Exception:
+            pass
+
+    # Транспорт/шум по ключевым словам
+    if not property_data.get("metro"):
+        score += 0.05
+        reasons.append("Нет данных о метро/транспорте")
+    if _has_any(desc, ["магистрал", "жд", "ж/д", "шум", "аэропорт", "промзона", "пром-зона"]):
+        score += 0.03
+        reasons.append("Шум/магистраль/ЖД рядом")
+
+    # Юр. ключи / обременения
+    if _has_any(desc, ["ипотек", "опек", "несовершеннолет", "залог", "арест", "долг", "обремен"]):
+        score += 0.10
+        reasons.append("В тексте: ипотека/опека/долги")
+    if delta is not None:
+        try:
+            delta_f = float(delta)
+            if delta_f < -15 and not _has_any(desc, ["ипотек", "опек", "несовершеннолет", "залог", "арест", "долг", "обремен"]):
+                score += 0.05
+                reasons.append("Цена сильно ниже без явных причин")
+        except Exception:
+            pass
+
+    # Переплан
+    if _has_any(desc, ["переплан", "узакон", "самовол"]):
+        score += 0.05
+        reasons.append("Есть перепланировка/узаконение")
+
+    # Состояние
+    if _has_any(desc, ["требует ремонта", "плохое состояние", "без ремонта"]):
+        score += 0.05
+        reasons.append("Требуется ремонт")
+    if _has_any(desc, ["свежий ремонт", "евроремонт", "капремонт", "после ремонта"]):
+        score -= 0.03
+
+    # Лифт (если данные появятся)
+    if floors_total and floors_total > 5 and property_data.get("has_elevator") is False:
+        score += 0.03
+        reasons.append("Высокий дом без лифта")
+
+    score = max(0.0, min(1.0, score))
+    return score, reasons
 DOC_CHECKLIST = [
     "Выписка из ЕГРН (права, обременения, история переходов). Заказать самостоятельно через Госуслуги/МФЦ.",
     "Правоустанавливающий документ (ДКП/дарение/наследство/приватизация) — продавец в нём совпадает с ЕГРН.",
@@ -591,12 +713,23 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
     # чтобы не получить 400 "Invalid JSON" из-за объёмного body.
     safe_input = _trim_text_fields(_filter_property_data(property_data), limit=800)
 
+    # Эвристический риск, чтобы был даже без LLM
+    risk_score_heur, risk_reasons = _compute_risk(property_data, price_meta)
+
     try:
         raw_response = await provider.generate_report(safe_input)
         report_text = (raw_response or "").strip()
         try:
             parsed_candidate = _parse_llm_json(raw_response)
             if isinstance(parsed_candidate, dict):
+                # Сливаем риск: консервативно берём max эвристики и LLM
+                if "risk_score" in parsed_candidate:
+                    try:
+                        parsed_candidate["risk_score"] = max(
+                            float(parsed_candidate["risk_score"] or 0), risk_score_heur
+                        )
+                    except Exception:
+                        parsed_candidate["risk_score"] = risk_score_heur
                 report_model = ReportModel.parse_obj(parsed_candidate)
                 parsed_report = report_model.dict()
                 report_text = _render_report_text(parsed_report)
@@ -614,6 +747,23 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
             report_text = stub_resp
         except Exception:
             raise ValueError(f"LLM response handling failed: {exc}", raw_response) from exc
+
+    # Если LLM не вернул риск — подставляем эвристику
+    if parsed_report is None:
+        parsed_report = {
+            "risk_score": risk_score_heur,
+            "summary": report_text or "",
+            "recommendation": "",
+            "price_range": price_meta.get("price_range")
+            or {"min_value": 0, "max_value": 0, "currency": "RUB"},
+            "pros": [],
+            "cons": risk_reasons,
+            "checks": [],
+        }
+    elif parsed_report.get("risk_score") is None:
+        parsed_report["risk_score"] = risk_score_heur
+
+    parsed_report.setdefault("risk_reasons", risk_reasons)
 
     log_history(property_data, parsed_report or report_text, raw_response, mode=os.getenv("AI_MODE", "cloud"))
 
