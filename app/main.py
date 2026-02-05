@@ -1148,6 +1148,12 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
         addr_meta = _extract_address_metro_from_text(text)
         for k, v in (addr_meta or {}).items():
             parsed_fields.setdefault(k, v)
+        # Если нашли адрес/город — заполним location для формы
+        if addr_meta.get("address"):
+            parsed_fields.setdefault("address", addr_meta["address"])
+            parsed_fields.setdefault("location", addr_meta["address"])
+        elif addr_meta.get("city"):
+            parsed_fields.setdefault("location", addr_meta["city"])
     except Exception:
         pass
 
