@@ -749,19 +749,31 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
             raise ValueError(f"LLM response handling failed: {exc}", raw_response) from exc
 
     # Если LLM не вернул риск — подставляем эвристику
+    def _fallback_price_range() -> Dict[str, Any]:
+        price = property_data.get("price")
+        if price:
+            try:
+                p = float(price)
+                return {"min_value": p, "max_value": p, "currency": "RUB"}
+            except Exception:
+                pass
+        return {"min_value": 0, "max_value": 0, "currency": "RUB"}
+
     if parsed_report is None:
         parsed_report = {
             "risk_score": risk_score_heur,
             "summary": report_text or "",
             "recommendation": "",
-            "price_range": price_meta.get("price_range")
-            or {"min_value": 0, "max_value": 0, "currency": "RUB"},
+            "price_range": price_meta.get("price_range") or _fallback_price_range(),
             "pros": [],
             "cons": risk_reasons,
             "checks": [],
         }
-    elif parsed_report.get("risk_score") is None:
-        parsed_report["risk_score"] = risk_score_heur
+    else:
+        if parsed_report.get("risk_score") is None:
+            parsed_report["risk_score"] = risk_score_heur
+        if not parsed_report.get("price_range"):
+            parsed_report["price_range"] = price_meta.get("price_range") or _fallback_price_range()
 
     parsed_report.setdefault("risk_reasons", risk_reasons)
 
