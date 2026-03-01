@@ -146,6 +146,8 @@
     .pill.success { background: #e5f7ed; color: var(--green); }
     .pill.warning { background: #fff6e5; color: #c88c00; }
     .pill.danger { background: #fdeaea; color: var(--red); }
+    .pill.info { background: #eaf3ff; color: var(--blue-700); }
+    .pill.neutral { background: #f3f5f9; color: var(--muted); }
     .card-section { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
     .range {
       display: flex;
@@ -316,6 +318,14 @@
         </div>
 
         <div class="card-section">
+          <div style="font-weight:700;">Статус оценки</div>
+          <div class="result-head" style="margin-top:8px; margin-bottom:0;">
+            <div class="pill neutral" id="evalStage">Ожидание</div>
+          </div>
+          <div id="evalHint" class="note-box" style="margin-top:10px;">Заполните данные и запустите оценку.</div>
+        </div>
+
+        <div class="card-section">
           <div style="font-weight:700;">Оценка цены</div>
           <div class="range" id="priceRange">—</div>
           <div class="hint" id="priceHint"></div>
@@ -418,6 +428,8 @@
         // result
         verdict: document.getElementById("verdict"),
         modeTag: document.getElementById("modeTag"),
+        evalStage: document.getElementById("evalStage"),
+        evalHint: document.getElementById("evalHint"),
         summaryText: document.getElementById("summaryText"),
         priceRange: document.getElementById("priceRange"),
         priceHint: document.getElementById("priceHint"),
@@ -481,6 +493,15 @@
       function setStatus(text, kind = "") {
         elements.status.textContent = text || "";
         elements.status.className = `status ${kind}`;
+      }
+
+      function setEvalStage(text, kind = "neutral") {
+        elements.evalStage.textContent = text || "Ожидание";
+        elements.evalStage.className = `pill ${kind || "neutral"}`;
+      }
+
+      function setEvalHint(text) {
+        elements.evalHint.textContent = text || "Заполните данные и запустите оценку.";
       }
 
       function setFetchStatus(text, kind = "") {
@@ -598,6 +619,7 @@
           const text = limitText(data.text || "");
           elements.adText.value = text;
           state.adText = text;
+          state.url = url;
           state.images = data.images || [];
           if (data.parsed && typeof data.parsed === "object") {
             applyParsedData(data.parsed);
@@ -694,6 +716,7 @@
         const verdict = verdictFromRisk(riskScore);
         elements.verdict.textContent = `Вердикт: ${verdict.label}`;
         elements.verdict.className = `pill ${verdict.className}`;
+        elements.modeTag.textContent = "AI";
         elements.summaryText.textContent = compactText(report.summary || text || "Ответ не распознан. Попробуйте ещё раз.");
 
         const priceMeta = data.price_meta || {};
@@ -753,15 +776,29 @@
 
       async function evaluate() {
         let adTextVal = "";
-        // Если во вкладке "Вставить объявление" — всегда подтягиваем ссылку/текст заново.
         if (state.activeTab === "paste") {
-          try {
-            adTextVal = await fetchFromUrl(true);
-            elements.adText.value = adTextVal || "";
-          } catch (_) {
-            setStatus("Не удалось загрузить ссылку.", "error");
-            return;
+          const currentUrl = elements.adUrl.value.trim();
+          const currentText = elements.adText.value.trim();
+          const shouldRefetch = Boolean(currentUrl) && (!currentText || currentUrl !== state.url);
+          setEvalStage("Подготовка данных", "info");
+          setEvalHint("Готовим данные для отправки на сервер.");
+
+          if (shouldRefetch) {
+            setEvalStage("Загрузка объявления", "info");
+            setEvalHint("Пробуем загрузить объявление по ссылке.");
+            try {
+              adTextVal = await fetchFromUrl(true);
+              elements.adText.value = adTextVal || "";
+            } catch (_) {
+              setEvalStage("Ошибка загрузки", "danger");
+              setEvalHint("Не удалось загрузить объявление. Проверьте ссылку или заполните данные вручную.");
+              setStatus("Не удалось загрузить ссылку.", "error");
+              return;
+            }
+          } else {
+            adTextVal = currentText;
           }
+
           const textForParse = adTextVal || elements.adText.value || "";
           state.adText = textForParse;
           const parsed = parseListingText(textForParse, elements.adUrl.value || "");
@@ -773,10 +810,14 @@
         }
         const payload = buildPayload();
         if (!payload.location && !payload.description && !payload.address) {
+          setEvalStage("Недостаточно данных", "warning");
+          setEvalHint("Для оценки нужно описание объявления или заполненные поля объекта.");
           setStatus("Добавьте текст или заполните поля вручную.", "error");
           return;
         }
         setStatus("Оцениваем…", "info");
+        setEvalStage("Запрос отправлен", "info");
+        setEvalHint("Запрос отправлен на сервер. Ожидаем результат оценки.");
         elements.evaluateBtn.disabled = true;
         try {
           const res = await fetch("/analyze", {
@@ -784,22 +825,32 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ property_data: payload })
           });
+          let body = null;
+          try {
+            body = await res.json();
+          } catch (_) {}
           if (!res.ok) {
             let errMsg = `HTTP ${res.status}`;
-            try {
-              const body = await res.json();
-              if (body && body.detail) {
-                errMsg = Array.isArray(body.detail) ? body.detail.map((d) => d.msg || d).join("; ") : body.detail;
-              }
-            } catch (_) {}
+            if (body && body.detail) {
+              errMsg = Array.isArray(body.detail) ? body.detail.map((d) => d.msg || d).join("; ") : body.detail;
+            } else if (body && body.error) {
+              errMsg = body.error;
+            }
+            setEvalStage("Ошибка", "danger");
+            setEvalHint("Оценка не выполнена. Подробности доступны только в серверных логах.");
             throw new Error(errMsg);
           }
-          const data = await res.json();
+          const data = body || {};
           renderResult(data);
+          setEvalStage("Готово", "success");
+          setEvalHint("Оценка успешно завершена.");
           setStatus("Готово.", "ok");
         } catch (err) {
           console.error(err);
           setStatus(`Не удалось получить оценку: ${err.message}`, "error");
+          if (elements.evalHint.textContent === "Запрос отправлен на сервер. Ожидаем результат оценки.") {
+            setEvalHint("Оценка не выполнена. Подробности доступны только в серверных логах.");
+          }
         } finally {
           elements.evaluateBtn.disabled = false;
         }
@@ -813,6 +864,8 @@
         elements.adText.value = "";
         elements.adUrl.value = "";
         elements.parsedSummary.textContent = "";
+        setEvalStage("Ожидание", "neutral");
+        setEvalHint("Заполните данные и запустите оценку.");
         updateManualForm();
         setStatus("");
       }
@@ -836,6 +889,7 @@
       // Init
       updateManualForm();
       renderResult({ report: {}, report_text: "" });
+      setEvalHint("Заполните данные и запустите оценку.");
     })();
   </script>
 </body>

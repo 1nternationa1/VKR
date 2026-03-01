@@ -2,11 +2,14 @@ import asyncio
 import json
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 import random
 import re
+import time
 import html
 from typing import Any, Dict, Optional, List
 from urllib.parse import urljoin
+from uuid import uuid4
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -23,10 +26,49 @@ from .providers import (
     get_provider,
     _filter_property_data,
 )
+from .proxy import get_httpx_proxies, get_playwright_proxy
 from .schemas import AnalyzeRequest, CompareObject, CompareRequest, CompareResponse, ReportModel
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_FILE_PATH = os.path.join(LOG_DIR, "app.log")
+
+
+def configure_logging() -> None:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    root_logger = logging.getLogger()
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root_logger.setLevel(level)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+
+    has_file_handler = any(
+        isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == LOG_FILE_PATH
+        for handler in root_logger.handlers
+    )
+    if not has_file_handler:
+        file_handler = RotatingFileHandler(
+            LOG_FILE_PATH,
+            maxBytes=int(os.getenv("LOG_MAX_BYTES", "1048576")),
+            backupCount=int(os.getenv("LOG_BACKUP_COUNT", "3")),
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+    has_stream_handler = any(
+        isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+        for handler in root_logger.handlers
+    )
+    if not has_stream_handler:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +94,7 @@ def load_env_file() -> None:
 
 
 load_env_file()
+configure_logging()
 
 app = FastAPI(
     title="Real Estate Valuation MVP",
@@ -88,6 +131,17 @@ def _parse_llm_json(raw: str) -> Any:
             except Exception:
                 pass
     raise ValueError(f"LLM returned non-JSON response: {raw[:200]}")
+
+
+def _append_trace(trace: List[Dict[str, Any]], stage: str, message: str, **meta: Any) -> None:
+    entry: Dict[str, Any] = {
+        "time": time.strftime("%H:%M:%S"),
+        "stage": stage,
+        "message": message,
+    }
+    if meta:
+        entry["meta"] = meta
+    trace.append(entry)
 
 
 def _render_report_text(report: Any) -> str:
@@ -456,6 +510,40 @@ def _html_to_text(content: str) -> str:
     return content.strip()
 
 
+def _looks_like_listing_block(content: str) -> bool:
+    """Detect Avito/r.jina anti-bot pages so we don't analyze them as listings."""
+    if not content:
+        return False
+    lower = content.lower()
+    markers = (
+        "доступ ограничен: проблема с ip",
+        "target url returned error 429",
+        "too many requests",
+        "нажмите на кнопку продолжить",
+        "иногда такое случается",
+        "что не так с ip",
+        "решения капчи",
+        "captcha",
+    )
+    return any(marker in lower for marker in markers)
+
+
+def _is_truthy_env(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() in ("1", "true", "yes")
+
+
+def _is_avito_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return "avito.ru" in lower or "m.avito.ru" in lower
+
+
+def _playwright_storage_state_path() -> str:
+    return os.getenv(
+        "LISTING_PLAYWRIGHT_STORAGE_STATE",
+        os.path.join(BASE_DIR, "data", "playwright_avito_state.json"),
+    )
+
+
 def _trim_text_fields(data: Dict[str, Any], limit: int = 3000) -> Dict[str, Any]:
     """Cap long free-text fields to avoid model/input limits."""
     for key in ("description", "source_text", "notes"):
@@ -702,23 +790,48 @@ def _validate_property_json(raw: str) -> Dict[str, Any]:
     return validated.property_data
 
 
-async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -> Dict[str, Any]:
+async def _process_report(property_data: Dict[str, Any], provider: AIProvider, request_id: str) -> Dict[str, Any]:
     raw_response: Optional[str] = None
     parsed_report: Optional[Dict[str, Any]] = None
     report_text: str = ""
     price_meta: Dict[str, Any] = _estimate_price_position(property_data)
     insights = _build_extended_insights(property_data, price_meta)
+    debug_trace: List[Dict[str, Any]] = []
+    provider_name = type(provider).__name__
+
+    logger.info("[%s] analyze started provider=%s", request_id, provider_name)
+    _append_trace(
+        debug_trace,
+        "analyze_started",
+        "Запрос принят сервером.",
+        provider=provider_name,
+        input_keys=sorted(property_data.keys()),
+    )
 
     # Extra safety: drop лишние поля и длинные тексты до вызова провайдера,
     # чтобы не получить 400 "Invalid JSON" из-за объёмного body.
     safe_input = _trim_text_fields(_filter_property_data(property_data), limit=800)
+    _append_trace(
+        debug_trace,
+        "input_normalized",
+        "Данные подготовлены для анализа.",
+        safe_input_keys=sorted(safe_input.keys()),
+    )
 
     # Эвристический риск, чтобы был даже без LLM
     risk_score_heur, risk_reasons = _compute_risk(property_data, price_meta)
+    _append_trace(
+        debug_trace,
+        "risk_precomputed",
+        "Эвристический риск рассчитан.",
+        risk_score=risk_score_heur,
+        reasons_count=len(risk_reasons),
+    )
 
     try:
-        raw_response = await provider.generate_report(safe_input)
+        raw_response = await provider.generate_report(safe_input, trace=debug_trace, request_id=request_id)
         report_text = (raw_response or "").strip()
+        logger.info("[%s] provider returned raw response chars=%s", request_id, len(report_text))
         try:
             parsed_candidate = _parse_llm_json(raw_response)
             if isinstance(parsed_candidate, dict):
@@ -733,20 +846,30 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
                 report_model = ReportModel.parse_obj(parsed_candidate)
                 parsed_report = report_model.dict()
                 report_text = _render_report_text(parsed_report)
+                _append_trace(debug_trace, "report_parsed", "Ответ LLM успешно распознан как JSON-отчёт.")
         except Exception:
             # Treat response as plain text if it is not JSON-shaped.
             parsed_report = None
+            _append_trace(debug_trace, "report_parse_failed", "Ответ LLM не удалось распарсить как JSON.")
     except Exception as exc:
-        logger.exception("LLM response handling failed, falling back to stub")
+        logger.exception("[%s] LLM response handling failed, falling back to stub", request_id)
+        _append_trace(
+            debug_trace,
+            "provider_failed",
+            "Основной LLM-запрос завершился ошибкой, включаем fallback.",
+            error=str(exc),
+        )
         fallback = LocalStubProvider()
         raw_response = f"Fallback after error: {exc}"
         try:
-            stub_resp = await fallback.generate_report(property_data)
+            stub_resp = await fallback.generate_report(property_data, trace=debug_trace, request_id=request_id)
             raw_response = f"{raw_response}\n{stub_resp}"
             parsed_report = None
             report_text = stub_resp
+            _append_trace(debug_trace, "fallback_ready", "Fallback-ответ сформирован локально.")
         except Exception:
-            raise ValueError(f"LLM response handling failed: {exc}", raw_response) from exc
+            _append_trace(debug_trace, "fallback_failed", "Fallback тоже завершился ошибкой.")
+            raise ValueError(f"LLM response handling failed: {exc}", raw_response, debug_trace) from exc
 
     # Если LLM не вернул риск — подставляем эвристику
     def _fallback_price_range() -> Dict[str, Any]:
@@ -778,6 +901,14 @@ async def _process_report(property_data: Dict[str, Any], provider: AIProvider) -
     parsed_report.setdefault("risk_reasons", risk_reasons)
 
     log_history(property_data, parsed_report or report_text, raw_response, mode=os.getenv("AI_MODE", "cloud"))
+    logger.info("[%s] analyze completed", request_id)
+    _append_trace(
+        debug_trace,
+        "analyze_completed",
+        "Оценка завершена.",
+        report_ready=bool(parsed_report),
+        log_file=LOG_FILE_PATH,
+    )
 
     return {
         "report": parsed_report,
@@ -859,6 +990,7 @@ async def analyze(
     property_json: Optional[str] = Form(None),
 ) -> Any:
     provider = get_provider()
+    request_id = uuid4().hex[:8]
 
     is_form = property_json is not None
     property_data: Optional[Dict[str, Any]] = None
@@ -891,10 +1023,11 @@ async def analyze(
         raise HTTPException(status_code=400, detail=detail) from exc
 
     try:
-        result = await _process_report(property_data, provider)
+        result = await _process_report(property_data, provider, request_id)
     except ValueError as exc:
         error_text = str(exc.args[0])
         raw_response = exc.args[1] if len(exc.args) > 1 else None
+        logger.error("[%s] analyze failed with ValueError: %s", request_id, error_text)
         if is_form:
             context = {
                 "request": request,
@@ -905,10 +1038,14 @@ async def analyze(
             }
             return templates.TemplateResponse("index.html", context, status_code=502)
         return JSONResponse(
-            {"error": error_text, "raw_response": raw_response},
+            {
+                "error": "Не удалось выполнить оценку. Попробуйте ещё раз.",
+                "raw_response": None,
+            },
             status_code=502,
         )
     except Exception as exc:  # provider errors
+        logger.exception("[%s] analyze failed", request_id)
         if is_form:
             context = {
                 "request": request,
@@ -917,7 +1054,12 @@ async def analyze(
                 "sample_json": json.dumps(property_data, ensure_ascii=False, indent=2),
             }
             return templates.TemplateResponse("index.html", context, status_code=502)
-        raise HTTPException(status_code=502, detail=str(exc))
+        return JSONResponse(
+            {
+                "error": "Не удалось выполнить оценку. Попробуйте ещё раз.",
+            },
+            status_code=502,
+        )
 
     if is_form:
         context = {
@@ -959,21 +1101,14 @@ async def api_analyze(payload: CompareRequest) -> CompareResponse:
     return _build_compare_response(payload.objects)
 
 
-@app.post("/api/fetch_listing")
-async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
-    url = (payload.get("url") or "").strip()
+async def fetch_listing_data(url: str, include_raw_html: bool = False) -> Dict[str, Any]:
     if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
+        raise ValueError("URL is required")
     if not url.lower().startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+        raise ValueError("URL must start with http:// or https://")
 
-    # Прокси только для загрузки объявлений (не влияет на другие запросы)
-    proxies = {
-        "http://": os.getenv("LISTING_HTTP_PROXY") or os.getenv("HTTP_PROXY") or None,
-        "https://": os.getenv("LISTING_HTTPS_PROXY") or os.getenv("HTTPS_PROXY") or None,
-    }
-    if not proxies["http://"] and not proxies["https://"]:
-        proxies = None
+    # Прокси включается только в fallback-ветке загрузки объявления.
+    fallback_proxies = get_httpx_proxies("LISTING")
 
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
@@ -991,15 +1126,20 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
         "Referer": "https://www.avito.ru/",
     }
 
-    async def _fetch_direct(target: str) -> str:
-        async with httpx.AsyncClient(timeout=12.0, proxies=proxies, headers=headers) as client:
+    async def _fetch_direct(target: str, client_proxies: Optional[Dict[str, str]] = None) -> str:
+        async with httpx.AsyncClient(
+            timeout=12.0,
+            proxies=client_proxies,
+            headers=headers,
+            trust_env=False,
+        ) as client:
             response = await client.get(target, follow_redirects=True)
             response.raise_for_status()
             return response.text
 
     async def _fetch_via_jina(target: str) -> str:
         proxy_url = f"https://r.jina.ai/{target}"
-        async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers, trust_env=False) as client:
             response = await client.get(proxy_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
@@ -1007,14 +1147,14 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     async def _fetch_via_jina_mobile(target: str) -> str:
         mobile = target.replace("https://www.avito.ru", "https://m.avito.ru").replace("http://", "https://")
         proxy_url = f"https://r.jina.ai/{mobile}"
-        async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers, trust_env=False) as client:
             response = await client.get(proxy_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
 
     async def _fetch_via_jina_double(target: str) -> str:
         proxy_url = f"https://r.jina.ai/https://r.jina.ai/{target}"
-        async with httpx.AsyncClient(timeout=18.0, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=18.0, headers=headers, trust_env=False) as client:
             response = await client.get(proxy_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
@@ -1022,12 +1162,12 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
     async def _fetch_via_textise(target: str) -> str:
         """Фолбэк через textise-dot-iitty / allorigins-класс (через r.jina.ai)."""
         proxy_url = f"https://r.jina.ai/https://r.jina.ai/{target}"
-        async with httpx.AsyncClient(timeout=18.0, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=18.0, headers=headers, trust_env=False) as client:
             response = await client.get(proxy_url, follow_redirects=True)
             response.raise_for_status()
             return response.text
 
-    async def _fetch_via_playwright(target: str) -> Optional[str]:
+    async def _fetch_via_playwright(target: str, use_proxy: bool = False) -> Optional[str]:
         """
         Последняя попытка: открыть страницу реальным браузером и нажать «Продолжить»
         на капче Avito. Работает только если playwright установлен и доступен Chromium.
@@ -1038,18 +1178,35 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
         except Exception:
             return None
 
+        headless = _is_truthy_env("LISTING_PLAYWRIGHT_HEADLESS", "false")
+        captcha_wait_seconds = int(os.getenv("LISTING_CAPTCHA_WAIT_SECONDS", "90"))
         browser = None
+        context = None
         page = None
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                launch_kwargs: Dict[str, Any] = {"headless": headless}
+                channel = os.getenv("LISTING_PLAYWRIGHT_CHANNEL")
+                if channel:
+                    launch_kwargs["channel"] = channel
+                playwright_proxy = get_playwright_proxy("LISTING") if use_proxy else None
+                if playwright_proxy:
+                    launch_kwargs["proxy"] = playwright_proxy
+                browser = await p.chromium.launch(**launch_kwargs)
+                context_kwargs: Dict[str, Any] = {
+                    "user_agent": headers["User-Agent"],
+                    "locale": "ru-RU",
+                    "viewport": {"width": 1280, "height": 720},
+                }
+                storage_state_path = _playwright_storage_state_path()
+                if os.path.exists(storage_state_path):
+                    context_kwargs["storage_state"] = storage_state_path
+
                 context = await browser.new_context(
-                    user_agent=headers["User-Agent"],
-                    locale="ru-RU",
-                    viewport={"width": 1280, "height": 720},
+                    **context_kwargs,
                 )
                 page = await context.new_page()
-                await page.goto(target, wait_until="networkidle", timeout=20000)
+                await page.goto(target, wait_until="domcontentloaded", timeout=20000)
 
                 # Если показана капча Avito, там есть кнопка «Продолжить».
                 try:
@@ -1059,6 +1216,24 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
                     pass
 
                 content = await page.content()
+                if _looks_like_listing_block(content) and not headless:
+                    logger.warning(
+                        "Avito anti-bot page detected in Playwright; waiting up to %s seconds for manual solve",
+                        captcha_wait_seconds,
+                    )
+                    deadline = time.monotonic() + captcha_wait_seconds
+                    while time.monotonic() < deadline:
+                        try:
+                            await page.get_by_text("Продолжить").click(timeout=1000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(1000)
+                        content = await page.content()
+                        if not _looks_like_listing_block(content):
+                            break
+                if context:
+                    os.makedirs(os.path.dirname(storage_state_path), exist_ok=True)
+                    await context.storage_state(path=storage_state_path)
                 return content
         except Exception:
             return None
@@ -1069,6 +1244,11 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
             except Exception:
                 pass
             try:
+                if context:
+                    await context.close()
+            except Exception:
+                pass
+            try:
                 if browser:
                     await browser.close()
             except Exception:
@@ -1076,22 +1256,42 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
 
     raw_html: Optional[str] = None
     errors: list[str] = []
-    # Try proxy first (лучше для заблокированных RU сайтов), затем прямой доступ.
+    # Основной путь идёт без прокси. Прокси включается только в fallback для прямого доступа к объявлению.
     images: List[str] = []
     parsed_fields: Dict[str, Any] = {}
-    fetch_chain = (
-        _fetch_via_jina_mobile,  # мобильная версия Авито
-        _fetch_via_jina,         # обычный r.jina.ai
-        _fetch_via_jina_double,  # двойной прокси
-        _fetch_via_textise,
-        _fetch_direct,
-        _fetch_via_playwright,
-    )
-    for fetcher in fetch_chain:
+    playwright_first_for_avito = _is_avito_url(url) and _is_truthy_env("LISTING_AVITO_PLAYWRIGHT_FIRST", "true")
+    fetch_chain: tuple[tuple[str, Any], ...]
+    if playwright_first_for_avito:
+        fetch_chain = (
+            ("playwright", lambda: _fetch_via_playwright(url)),
+            ("jina_mobile", lambda: _fetch_via_jina_mobile(url)),
+            ("jina", lambda: _fetch_via_jina(url)),
+            ("jina_double", lambda: _fetch_via_jina_double(url)),
+            ("textise", lambda: _fetch_via_textise(url)),
+            ("direct", lambda: _fetch_direct(url)),
+        )
+    else:
+        fetch_chain = (
+            ("jina_mobile", lambda: _fetch_via_jina_mobile(url)),
+            ("jina", lambda: _fetch_via_jina(url)),
+            ("jina_double", lambda: _fetch_via_jina_double(url)),
+            ("textise", lambda: _fetch_via_textise(url)),
+            ("direct", lambda: _fetch_direct(url)),
+            ("playwright", lambda: _fetch_via_playwright(url)),
+        )
+    if fallback_proxies:
+        fetch_chain += (
+            ("playwright_proxy_fallback", lambda: _fetch_via_playwright(url, use_proxy=True)),
+            ("direct_proxy_fallback", lambda: _fetch_direct(url, client_proxies=fallback_proxies)),
+        )
+
+    for fetcher_name, fetcher in fetch_chain:
         try:
-            raw_html = await fetcher(url)
+            raw_html = await fetcher()
             if not raw_html:
                 raise ValueError("empty body")
+            if _looks_like_listing_block(raw_html):
+                raise ValueError("listing blocked by anti-bot / captcha")
 
             if not images:
                 try:
@@ -1109,11 +1309,12 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
             body = exc.response.text[:200] if exc.response is not None else str(exc)
             if exc.response is not None and exc.response.status_code in (403, 429):
                 body = f"{exc.response.status_code}: Avito вернул защиту (403/429). Скопируйте текст объявления вручную или сохраните страницу и загрузите её."
-            errors.append(body)
+            errors.append(f"{fetcher_name}: {body}")
         except httpx.RequestError as exc:
-            errors.append(str(exc))
+            detail = str(exc).strip() or type(exc).__name__
+            errors.append(f"{fetcher_name}: {type(exc).__name__} {detail}")
         except ValueError as exc:
-            errors.append(str(exc))
+            errors.append(f"{fetcher_name}: {exc}")
         await asyncio.sleep(0.8)
 
     if not raw_html:
@@ -1123,11 +1324,16 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
             "Скопируйте текст и параметры объявления вручную."
         )
         # Возвращаем мягкий ответ, чтобы UI мог продолжить работу без 502.
-        return {"text": "", "images": [], "parsed": {}, "error": fallback_msg}
+        result = {"text": "", "images": [], "parsed": {}, "error": fallback_msg, "fetch_errors": errors}
+        if include_raw_html:
+            result["raw_html"] = None
+        return result
 
     try:
         text = _html_to_text(raw_html)
     except Exception:
+        text = ""
+    if _looks_like_listing_block(text):
         text = ""
 
     # Merge images from meta-tags (if present) with scraped <img> list
@@ -1159,12 +1365,36 @@ async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
 
     if not text or len(text) < 40:
         fallback_msg = (
-            "Не удалось надёжно извлечь текст объявления (возможно, защита от ботов или 429). "
-            "Скопируйте описание вручную и повторите."
+            "Не удалось надёжно извлечь текст объявления. "
+            "Вероятная причина: защита Avito по IP / капча / 429. "
+            "Скопируйте описание вручную или пройдите капчу в браузерном fallback."
         )
-        return {"text": text, "images": images, "parsed": parsed_fields, "error": fallback_msg}
+        result = {
+            "text": text,
+            "images": images,
+            "parsed": parsed_fields,
+            "error": fallback_msg,
+            "fetch_errors": errors,
+        }
+        if include_raw_html:
+            result["raw_html"] = raw_html
+        return result
 
-    return {"text": text, "images": images, "parsed": parsed_fields, "error": None}
+    result = {"text": text, "images": images, "parsed": parsed_fields, "error": None, "fetch_errors": errors}
+    if include_raw_html:
+        result["raw_html"] = raw_html
+    return result
+
+
+@app.post("/api/fetch_listing")
+async def api_fetch_listing(payload: Dict[str, str]) -> Dict[str, Any]:
+    url = (payload.get("url") or "").strip()
+    try:
+        result = await fetch_listing_data(url, include_raw_html=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result.pop("fetch_errors", None)
+    return result
 
 
 @app.get("/history", response_class=HTMLResponse)

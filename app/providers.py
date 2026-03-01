@@ -1,12 +1,17 @@
 import json
+import logging
 import math
 import os
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from .prompt_loader import build_prompt
+from .proxy import get_httpx_proxies
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------
@@ -47,20 +52,48 @@ def _strict_json_dumps(obj: Any) -> str:
     return json.dumps(safe, ensure_ascii=False, allow_nan=False)
 
 
+def _append_trace(
+    trace: Optional[List[Dict[str, Any]]],
+    stage: str,
+    message: str,
+    **meta: Any,
+) -> None:
+    if trace is None:
+        return
+    entry: Dict[str, Any] = {
+        "time": time.strftime("%H:%M:%S"),
+        "stage": stage,
+        "message": message,
+    }
+    if meta:
+        entry["meta"] = _sanitize_jsonable(meta)
+    trace.append(entry)
+
+
 def _filter_property_data(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Оставляем только поля, введённые пользователем в форме оценки."""
+    """Keep only fields that are safe and useful for pricing, risk, and LLM context."""
     allowed_keys = {
         "type",
         "location",
+        "city",
         "address",
+        "metro",
+        "metro_time_min",
+        "metro_time_max",
         "price",
         "area",
         "rooms",
         "floor",
         "floors_total",
         "year",
+        "material",
+        "has_elevator",
         "condition",
         "notes",
+        "description",
+        "source_text",
+        "url",
+        "images",
     }
     return {k: v for k, v in data.items() if k in allowed_keys and v not in (None, "", [])}
 
@@ -126,7 +159,13 @@ def _shrink_messages(messages: List[Dict[str, Any]], limit: int = 2000) -> List[
 
 class AIProvider(ABC):
     @abstractmethod
-    async def generate_report(self, property_data: Dict[str, Any]) -> str:
+    async def generate_report(
+        self,
+        property_data: Dict[str, Any],
+        *,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
         """Return the raw LLM response as a string."""
 
 
@@ -142,12 +181,8 @@ class CloudProvider(AIProvider):
         self.timeout = float(os.getenv("CLOUD_TIMEOUT", "60"))
         # temp по умолчанию 1.0 для совместимости с /models/gpt Amvera (иначе 400)
         self.temperature = float(os.getenv("CLOUD_TEMPERATURE", "1"))
-        self.proxies = {
-            "http://": os.getenv("CLOUD_HTTP_PROXY") or os.getenv("HTTP_PROXY") or None,
-            "https://": os.getenv("CLOUD_HTTPS_PROXY") or os.getenv("HTTPS_PROXY") or None,
-        }
-        if not any(self.proxies.values()):
-            self.proxies = None
+        # LLM calls should not inherit global HTTP(S)_PROXY by default.
+        self.proxies = get_httpx_proxies("CLOUD", include_global=False)
         self.verify_ssl = os.getenv("CLOUD_VERIFY_SSL", "true").lower() not in ("0", "false", "no")
         self.httpx_timeout = httpx.Timeout(
             timeout=self.timeout,
@@ -233,7 +268,13 @@ class CloudProvider(AIProvider):
 
         return json.dumps(body, ensure_ascii=False)
 
-    async def _chat(self, payload: Dict[str, Any]) -> str:
+    async def _chat(
+        self,
+        payload: Dict[str, Any],
+        *,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
         if not self.api_url or not self.api_key:
             raise RuntimeError("Cloud provider is not configured. Set CLOUD_API_URL and CLOUD_API_KEY.")
 
@@ -253,30 +294,93 @@ class CloudProvider(AIProvider):
                     model_name,
                     payload.get("temperature", self.temperature),
                 )
+                logger.info("[%s] cloud attempt url=%s model=%s", request_id or "-", final_url, model_name)
+                _append_trace(
+                    trace,
+                    "provider_attempt",
+                    "Пробуем отправить запрос в LLM.",
+                    endpoint=final_url,
+                    model=model_name,
+                )
                 try:
                     async with httpx.AsyncClient(
                         timeout=self.httpx_timeout,
                         http2=self.use_http2,
                         proxies=self.proxies,
+                        trust_env=False,
                         verify=self.verify_ssl,
                     ) as client:
                         response = await client.post(final_url, json=attempt, headers=headers)
                     response.raise_for_status()
+                    logger.info(
+                        "[%s] cloud success url=%s model=%s status=%s",
+                        request_id or "-",
+                        final_url,
+                        model_name,
+                        response.status_code,
+                    )
+                    _append_trace(
+                        trace,
+                        "provider_success",
+                        "LLM принял запрос и вернул ответ.",
+                        endpoint=final_url,
+                        model=model_name,
+                        status_code=response.status_code,
+                    )
                     return self._parse_response(response)
                 except httpx.HTTPStatusError as exc:
                     err_text = exc.response.text[:200] if exc.response else str(exc)
+                    logger.warning(
+                        "[%s] cloud http error url=%s model=%s status=%s body=%s",
+                        request_id or "-",
+                        final_url,
+                        model_name,
+                        exc.response.status_code if exc.response else "n/a",
+                        err_text,
+                    )
                     errors.append(f"{final_url} [{model_name}]: {exc.response.status_code} {err_text}")
+                    _append_trace(
+                        trace,
+                        "provider_http_error",
+                        "LLM вернул HTTP-ошибку.",
+                        endpoint=final_url,
+                        model=model_name,
+                        status_code=exc.response.status_code if exc.response else None,
+                        error=err_text,
+                    )
                     # Если модель или эндпоинт не подходят — пробуем следующий
                     if exc.response is not None and exc.response.status_code in (400, 403, 404, 422):
                         continue
                     raise RuntimeError(f"LLM HTTP error: {err_text}") from exc
                 except httpx.RequestError as exc:
-                    errors.append(f"{final_url} [{model_name}]: {type(exc).__name__} {exc}")
+                    detail = str(exc).strip() or type(exc).__name__
+                    logger.warning(
+                        "[%s] cloud request error url=%s model=%s error=%s",
+                        request_id or "-",
+                        final_url,
+                        model_name,
+                        detail,
+                    )
+                    errors.append(f"{final_url} [{model_name}]: {type(exc).__name__} {detail}")
+                    _append_trace(
+                        trace,
+                        "provider_request_error",
+                        "Ошибка сети при обращении к LLM.",
+                        endpoint=final_url,
+                        model=model_name,
+                        error=detail,
+                    )
                     continue
 
         raise RuntimeError(f"LLM request failed: {'; '.join(errors[:3])}")
 
-    async def generate_report(self, property_data: Dict[str, Any]) -> str:
+    async def generate_report(
+        self,
+        property_data: Dict[str, Any],
+        *,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
         # Если цена не дошла в распарсенных полях (из-за 429 на fetch_listing), попробуем достать её из description.
         def _extract_price_from_text(txt: str) -> Optional[float]:
             if not txt:
@@ -315,6 +419,19 @@ class CloudProvider(AIProvider):
         max_chars = int(os.getenv("PROMPT_CHAR_LIMIT", "4000"))
         if len(prompt) > max_chars:
             prompt = prompt[:max_chars]
+        logger.info(
+            "[%s] cloud prompt prepared chars=%s keys=%s",
+            request_id or "-",
+            len(prompt),
+            ",".join(sorted(filtered.keys())),
+        )
+        _append_trace(
+            trace,
+            "prompt_ready",
+            "Промпт для LLM собран.",
+            prompt_chars=len(prompt),
+            input_keys=sorted(filtered.keys()),
+        )
 
         system_text = (
             "Ты генератор JSON. Ответь ОДНОЙ строкой строго валидным JSON без пробела в начале и без markdown. "
@@ -346,7 +463,13 @@ class CloudProvider(AIProvider):
             "messages": messages,
         }
 
-        raw = await self._chat(payload)
+        raw = await self._chat(payload, trace=trace, request_id=request_id)
+        _append_trace(
+            trace,
+            "provider_raw_response",
+            "Получен сырой ответ LLM.",
+            response_chars=len(raw or ""),
+        )
 
         # Пост-обработка: если модель вернула JSON, принудительно проставляем цену и приводим к схеме.
         try:
@@ -385,8 +508,10 @@ class CloudProvider(AIProvider):
                     "checks": [_clip(x) for x in (data.get("checks") or [])][:4],
                 }
 
+                _append_trace(trace, "provider_json_ok", "Ответ LLM успешно приведён к целевой JSON-схеме.")
                 return json.dumps(_sanitize_jsonable(data), ensure_ascii=False, allow_nan=False)
         except Exception:
+            _append_trace(trace, "provider_json_parse_failed", "LLM вернул невалидный JSON, отдаём raw-ответ.")
             pass  # если не json, отдадим как есть
 
         return raw
@@ -427,7 +552,14 @@ class CloudProvider(AIProvider):
 # ---------------------------
 
 class LocalStubProvider(AIProvider):
-    async def generate_report(self, property_data: Dict[str, Any]) -> str:
+    async def generate_report(
+        self,
+        property_data: Dict[str, Any],
+        *,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
+        _append_trace(trace, "stub_provider", "Используется локальный fallback-провайдер.")
         area = property_data.get("area") or property_data.get("square_meters")
         base_price = 1200 * float(area or 50)
         low = round(base_price * 0.9, 2)
@@ -454,6 +586,7 @@ class GeminiProvider(AIProvider):
         self.api_url = os.getenv("GEMINI_API_URL")  # optional override
         self.timeout = float(os.getenv("GEMINI_TIMEOUT", "20"))
         self.temperature = float(os.getenv("GEMINI_TEMPERATURE", "0.25"))
+        self.proxies = get_httpx_proxies("GEMINI", include_global=False)
 
     def _build_payload(self, prompt: str) -> Dict[str, Any]:
         return {
@@ -461,7 +594,13 @@ class GeminiProvider(AIProvider):
             "generationConfig": {"temperature": self.temperature},
         }
 
-    async def _call(self, prompt: str) -> str:
+    async def _call(
+        self,
+        prompt: str,
+        *,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
         if not self.api_key:
             raise RuntimeError("Gemini provider is not configured. Set GEMINI_API_KEY.")
 
@@ -493,18 +632,60 @@ class GeminiProvider(AIProvider):
                     else f"https://generativelanguage.googleapis.com/{version}/models/{model_name}:generateContent"
                 )
                 payload["model"] = model_name
+                logger.info("[%s] gemini attempt url=%s model=%s", request_id or "-", url, model_name)
+                _append_trace(
+                    trace,
+                    "provider_attempt",
+                    "Пробуем отправить запрос в Gemini.",
+                    endpoint=url,
+                    model=model_name,
+                )
 
                 try:
-                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    async with httpx.AsyncClient(timeout=self.timeout, proxies=self.proxies, trust_env=False) as client:
                         response = await client.post(url, params=params, json=payload)
                         response.raise_for_status()
+                    _append_trace(
+                        trace,
+                        "provider_success",
+                        "Gemini принял запрос и вернул ответ.",
+                        endpoint=url,
+                        model=model_name,
+                        status_code=response.status_code,
+                    )
                 except httpx.HTTPStatusError as exc:
                     last_exc = exc
                     text = (exc.response.text or "").lower()
+                    logger.warning(
+                        "[%s] gemini http error url=%s model=%s status=%s body=%s",
+                        request_id or "-",
+                        url,
+                        model_name,
+                        exc.response.status_code,
+                        exc.response.text[:200],
+                    )
+                    _append_trace(
+                        trace,
+                        "provider_http_error",
+                        "Gemini вернул HTTP-ошибку.",
+                        endpoint=url,
+                        model=model_name,
+                        status_code=exc.response.status_code,
+                        error=exc.response.text[:200],
+                    )
                     if exc.response.status_code in (403, 404) and "model" in text:
                         continue
                     raise RuntimeError(f"Gemini HTTP error: {exc.response.status_code} {exc.response.text}") from exc
                 except httpx.RequestError as exc:
+                    logger.warning("[%s] gemini request error url=%s model=%s error=%s", request_id or "-", url, model_name, exc)
+                    _append_trace(
+                        trace,
+                        "provider_request_error",
+                        "Ошибка сети при обращении к Gemini.",
+                        endpoint=url,
+                        model=model_name,
+                        error=str(exc),
+                    )
                     raise RuntimeError(f"Gemini request failed: {exc}") from exc
 
                 body = response.json()
@@ -528,13 +709,25 @@ class GeminiProvider(AIProvider):
                     text_out = json.dumps(text_out, ensure_ascii=False)
 
                 if text_out:
+                    _append_trace(
+                        trace,
+                        "provider_raw_response",
+                        "Получен сырой ответ Gemini.",
+                        response_chars=len(str(text_out)),
+                    )
                     return str(text_out)
 
         if last_exc:
             raise RuntimeError(f"Gemini HTTP error: {last_exc.response.status_code} {last_exc.response.text}") from last_exc
         raise RuntimeError("Empty response from Gemini")
 
-    async def generate_report(self, property_data: Dict[str, Any]) -> str:
+    async def generate_report(
+        self,
+        property_data: Dict[str, Any],
+        *,
+        trace: Optional[List[Dict[str, Any]]] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
         prompt = (
             "Ты эксперт по недвижимости. Верни строго валидный JSON по схеме: "
             '{"summary":"","recommendation":"","risk_score":0,'
@@ -542,7 +735,14 @@ class GeminiProvider(AIProvider):
             '"pros":[],"cons":[],"checks":[]} без лишнего текста. Пиши кратко.\n'
         )
         prompt += "Данные об объекте:\n" + build_prompt(property_data)
-        return await self._call(prompt)
+        _append_trace(
+            trace,
+            "prompt_ready",
+            "Промпт для Gemini собран.",
+            prompt_chars=len(prompt),
+            input_keys=sorted(property_data.keys()),
+        )
+        return await self._call(prompt, trace=trace, request_id=request_id)
 
     async def generate_comparison(self, objects: List[Dict[str, Any]]) -> str:
         formatted_objects = json.dumps(_sanitize_jsonable(objects), ensure_ascii=False, indent=2)
